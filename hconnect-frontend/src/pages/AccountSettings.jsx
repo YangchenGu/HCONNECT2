@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { useAuth0 } from "@auth0/auth0-react";
 import Card from "../components/Card.jsx";
 import { accountProfileDefaults, securityDefaults } from "../data/account_settings.js";
 
@@ -39,26 +40,141 @@ function Toggle({ checked, onChange, label, hint }) {
 }
 
 export default function AccountSettings() {
+  const { user, logout } = useAuth0();
   const [profile, setProfile] = useState(accountProfileDefaults);
   const [security, setSecurity] = useState(securityDefaults);
+  const [preferences, setPreferences] = useState({
+    emailUpdates: true,
+    smsUpdates: false,
+    inAppNotifications: true,
+  });
+  const [savedSnapshot, setSavedSnapshot] = useState({
+    profile: accountProfileDefaults,
+    security: securityDefaults,
+    preferences: {
+      emailUpdates: true,
+      smsUpdates: false,
+      inAppNotifications: true,
+    },
+  });
   const [statusMsg, setStatusMsg] = useState("");
+  const [statusType, setStatusType] = useState("success");
+
+  const storageKey = useMemo(() => `account_settings_${user?.sub || "guest"}`, [user?.sub]);
+
+  useEffect(() => {
+    const baseProfile = {
+      ...accountProfileDefaults,
+      fullName: user?.name || accountProfileDefaults.fullName,
+      email: user?.email || accountProfileDefaults.email,
+    };
+
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) {
+      const fresh = {
+        profile: baseProfile,
+        security: securityDefaults,
+        preferences: {
+          emailUpdates: true,
+          smsUpdates: false,
+          inAppNotifications: true,
+        },
+      };
+      setProfile(fresh.profile);
+      setSecurity(fresh.security);
+      setPreferences(fresh.preferences);
+      setSavedSnapshot(fresh);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      const hydrated = {
+        profile: { ...baseProfile, ...(parsed.profile || {}) },
+        security: { ...securityDefaults, ...(parsed.security || {}) },
+        preferences: {
+          emailUpdates: true,
+          smsUpdates: false,
+          inAppNotifications: true,
+          ...(parsed.preferences || {}),
+        },
+      };
+      setProfile(hydrated.profile);
+      setSecurity(hydrated.security);
+      setPreferences(hydrated.preferences);
+      setSavedSnapshot(hydrated);
+    } catch {
+      const fallback = {
+        profile: baseProfile,
+        security: securityDefaults,
+        preferences: {
+          emailUpdates: true,
+          smsUpdates: false,
+          inAppNotifications: true,
+        },
+      };
+      setProfile(fallback.profile);
+      setSecurity(fallback.security);
+      setPreferences(fallback.preferences);
+      setSavedSnapshot(fallback);
+    }
+  }, [storageKey, user?.email, user?.name]);
+
+  const validation = useMemo(() => {
+    const errors = {};
+
+    if (!profile.fullName.trim() || profile.fullName.trim().length < 2) {
+      errors.fullName = "Full name must be at least 2 characters.";
+    }
+
+    if (!profile.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.email.trim())) {
+      errors.email = "Please enter a valid email address.";
+    }
+
+    const phoneDigits = (profile.phone || "").replace(/\D/g, "");
+    if (!phoneDigits || phoneDigits.length < 8 || phoneDigits.length > 15) {
+      errors.phone = "Phone must contain 8-15 digits.";
+    }
+
+    return errors;
+  }, [profile]);
+
+  const isDirty = useMemo(() => {
+    return JSON.stringify({ profile, security, preferences }) !== JSON.stringify(savedSnapshot);
+  }, [profile, security, preferences, savedSnapshot]);
 
   const canSave = useMemo(() => {
-    return profile.fullName.trim() && profile.email.trim();
-  }, [profile]);
+    return Object.keys(validation).length === 0 && isDirty;
+  }, [validation, isDirty]);
 
   function saveProfile(e) {
     e.preventDefault();
-    setStatusMsg("Saved (demo). Next step: connect to backend / auth.");
+    if (!canSave) return;
+    const snapshot = { profile, security, preferences };
+    localStorage.setItem(storageKey, JSON.stringify(snapshot));
+    setSavedSnapshot(snapshot);
+    setStatusType("success");
+    setStatusMsg("Account settings saved successfully.");
     setTimeout(() => setStatusMsg(""), 2500);
   }
 
   function changePassword() {
-    alert("Change password (demo). Next step: open modal + verify current password.");
+    setStatusType("info");
+    setStatusMsg("Password changes are managed by Auth0. Use the login page 'Forgot password' flow.");
+    setTimeout(() => setStatusMsg(""), 3500);
   }
 
   function logoutEverywhere() {
-    alert("Log out of all sessions (demo). Next step: call auth revoke endpoint.");
+    logout({ logoutParams: { returnTo: window.location.origin } });
+  }
+
+  function resetToLastSaved() {
+    setProfile(savedSnapshot.profile);
+    setSecurity(savedSnapshot.security);
+    setPreferences(savedSnapshot.preferences);
+    setStatusType("info");
+    setStatusMsg("Changes reverted to last saved state.");
+    setTimeout(() => setStatusMsg(""), 1800);
   }
 
   return (
@@ -71,8 +187,9 @@ export default function AccountSettings() {
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => setProfile(accountProfileDefaults)}
+            onClick={resetToLastSaved}
             className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
+            disabled={!isDirty}
           >
             Reset
           </button>
@@ -91,7 +208,16 @@ export default function AccountSettings() {
       </div>
 
       {statusMsg ? (
-        <div className="rounded-2xl bg-emerald-50 ring-1 ring-emerald-200 px-4 py-3 text-sm text-emerald-900">
+        <div
+          className={[
+            "rounded-2xl px-4 py-3 text-sm ring-1",
+            statusType === "success"
+              ? "bg-emerald-50 ring-emerald-200 text-emerald-900"
+              : statusType === "info"
+              ? "bg-blue-50 ring-blue-200 text-blue-900"
+              : "bg-rose-50 ring-rose-200 text-rose-900",
+          ].join(" ")}
+        >
           {statusMsg}
         </div>
       ) : null}
@@ -99,7 +225,7 @@ export default function AccountSettings() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
           <Card title="Profile">
-            <SectionTitle title="Basic information" subtitle="These fields are placeholders; store to DB later." />
+            <SectionTitle title="Basic information" subtitle="These settings are stored per user on this device." />
 
             <form onSubmit={saveProfile} className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <label>
@@ -109,6 +235,7 @@ export default function AccountSettings() {
                   value={profile.fullName}
                   onChange={(e) => setProfile({ ...profile, fullName: e.target.value })}
                 />
+                {validation.fullName ? <div className="mt-1 text-xs text-rose-600">{validation.fullName}</div> : null}
               </label>
 
               <label>
@@ -127,6 +254,7 @@ export default function AccountSettings() {
                   value={profile.email}
                   onChange={(e) => setProfile({ ...profile, email: e.target.value })}
                 />
+                {validation.email ? <div className="mt-1 text-xs text-rose-600">{validation.email}</div> : null}
               </label>
 
               <label>
@@ -136,6 +264,7 @@ export default function AccountSettings() {
                   value={profile.phone}
                   onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
                 />
+                {validation.phone ? <div className="mt-1 text-xs text-rose-600">{validation.phone}</div> : null}
               </label>
 
               <label>
@@ -225,22 +354,22 @@ export default function AccountSettings() {
           <Card title="Preferences">
             <div className="space-y-3">
               <Toggle
-                checked={true}
-                onChange={() => {}}
+                checked={preferences.emailUpdates}
+                onChange={(v) => setPreferences((prev) => ({ ...prev, emailUpdates: v }))}
                 label="Email updates"
-                hint="Placeholder toggle."
+                hint="Receive account and activity updates by email."
               />
               <Toggle
-                checked={false}
-                onChange={() => {}}
+                checked={preferences.smsUpdates}
+                onChange={(v) => setPreferences((prev) => ({ ...prev, smsUpdates: v }))}
                 label="SMS updates"
-                hint="Placeholder toggle."
+                hint="Receive urgent alerts via SMS."
               />
               <Toggle
-                checked={true}
-                onChange={() => {}}
+                checked={preferences.inAppNotifications}
+                onChange={(v) => setPreferences((prev) => ({ ...prev, inAppNotifications: v }))}
                 label="In-app notifications"
-                hint="Placeholder toggle."
+                hint="Show notifications in the app feed."
               />
             </div>
           </Card>
@@ -253,14 +382,34 @@ export default function AccountSettings() {
             <div className="mt-3 flex flex-col gap-2">
               <button
                 type="button"
-                onClick={() => alert("Download my data (demo).")}
+                onClick={() => {
+                  const payload = {
+                    profile,
+                    security,
+                    preferences,
+                    exportedAt: new Date().toISOString(),
+                  };
+                  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "hconnect-account-settings.json";
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
                 className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
               >
                 Download my data
               </button>
               <button
                 type="button"
-                onClick={() => alert("Deactivate account (demo).")}
+                onClick={() => {
+                  const ok = window.confirm("Are you sure you want to deactivate this account? This is currently a local demo action.");
+                  if (!ok) return;
+                  localStorage.removeItem(storageKey);
+                  setStatusType("info");
+                  setStatusMsg("Account settings were cleared for this user on this device.");
+                }}
                 className="rounded-2xl bg-rose-600 text-white px-4 py-2 text-sm hover:bg-rose-500"
               >
                 Deactivate account

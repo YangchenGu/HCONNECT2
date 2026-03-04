@@ -30,7 +30,7 @@ const NAV = [
   { section: "Help", items: [{ to: "/help", label: "Help", icon: "❓" }] },
 ];
 
-export default function Sidebar({ collapsed, setCollapsed }) {
+export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
   return (
     <div className={cn("h-screen bg-slate-950 text-slate-100 flex flex-col", collapsed ? "w-20" : "w-72")}>
       <div className="flex items-center justify-between px-4 py-4">
@@ -90,15 +90,23 @@ export default function Sidebar({ collapsed, setCollapsed }) {
 
       <div className="mt-auto p-3">
         <div className="rounded-2xl bg-white/8 p-3">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 mb-2">
             <div className="h-10 w-10 rounded-xl bg-white/10 grid place-items-center">👨‍⚕️</div>
             {!collapsed && (
-              <div className="min-w-0">
-                <div className="text-sm font-semibold truncate">Dr. B</div>
-                <div className="text-xs text-slate-300 truncate">Provider Account</div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold truncate">{user?.name || "User"}</div>
+                <div className="text-xs text-slate-300 truncate">{user?.email}</div>
               </div>
             )}
           </div>
+          {!collapsed && (
+            <button
+              onClick={() => logout({ returnTo: window.location.origin })}
+              className="w-full mt-2 bg-red-600/20 hover:bg-red-600/30 text-red-300 text-sm py-2 rounded-lg transition"
+            >
+              Logout
+            </button>
+          )}
         </div>
       </div>
     </div>

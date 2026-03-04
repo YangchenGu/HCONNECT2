@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { Routes, Route, useLocation } from "react-router-dom";
 import { useAuth0 } from "@auth0/auth0-react";
 import Sidebar from "./components/Sidebar.jsx";
@@ -17,6 +17,12 @@ import NotificationSettings from "./pages/NotificationSettings.jsx";
 import ProfileCustomization from "./pages/ProfileCustomization.jsx";
 import Help from "./pages/Help.jsx";
 
+import RoleSelection from "./pages/RoleSelection.jsx";
+import VerifyWrapper from "./pages/VerifyWrapper.jsx";
+import DoctorEntry from "./pages/DoctorEntry.jsx";
+import RegisterWithPhone from "./pages/RegisterWithPhone.jsx";
+import { apiUrl } from "./lib/api.js";
+
 function titleFromPath(pathname) {
   if (pathname === "/") return "Dashboard";
   if (pathname.startsWith("/patients/new")) return "Add New Patient";
@@ -31,7 +37,7 @@ function titleFromPath(pathname) {
   return "Dashboard";
 }
 
-function DashboardLayout() {
+function DashboardLayout({ user, logout }) {
   const [collapsed, setCollapsed] = useState(false);
   const [search, setSearch] = useState("");
   const location = useLocation();
@@ -40,7 +46,7 @@ function DashboardLayout() {
 
   return (
     <div className="flex bg-slate-50">
-      <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} />
+      <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} user={user} logout={logout} />
       <div className="flex-1 min-h-screen">
         <Topbar title={title} search={search} setSearch={setSearch} />
 
@@ -67,7 +73,58 @@ function DashboardLayout() {
 }
 
 export default function App() {
-  const { isAuthenticated, isLoading } = useAuth0();
+  const { isAuthenticated, isLoading, user, logout, getAccessTokenSilently } = useAuth0();
+  const [userRole, setUserRole] = useState(null);
+  const [roleResolved, setRoleResolved] = useState(false);
+
+  useEffect(() => {
+    const loadRole = async () => {
+      if (!user) {
+        setUserRole(null);
+        setRoleResolved(true);
+        return;
+      }
+
+      const savedRole = localStorage.getItem(`user_role_${user.sub}`);
+      if (savedRole) {
+        setUserRole(savedRole);
+        setRoleResolved(true);
+        return;
+      }
+
+      if (!isAuthenticated) {
+        setUserRole(null);
+        setRoleResolved(true);
+        return;
+      }
+
+      try {
+        const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+        const res = await fetch(apiUrl("/api/me/role"), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) {
+          setUserRole(null);
+          setRoleResolved(true);
+          return;
+        }
+        const payload = await res.json();
+        if (payload?.role) {
+          setUserRole(payload.role);
+          localStorage.setItem(`user_role_${user.sub}`, payload.role);
+        } else {
+          setUserRole(null);
+        }
+      } catch {
+        setUserRole(null);
+      } finally {
+        setRoleResolved(true);
+      }
+    };
+
+    setRoleResolved(false);
+    loadRole();
+  }, [user, isAuthenticated, getAccessTokenSilently]);
 
   if (isLoading) {
     return (
@@ -80,9 +137,29 @@ export default function App() {
     );
   }
 
-  if (!isAuthenticated) {
-    return <LoginPage />;
+  if (isAuthenticated && !roleResolved) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+          <p className="mt-4 text-gray-600">Loading profile...</p>
+        </div>
+      </div>
+    );
   }
 
-  return <DashboardLayout />;
+  // no role chosen -> show selection/registration routes
+  if (!userRole) {
+    return (
+      <Routes>
+        <Route path="/doctor/entry" element={<DoctorEntry />} />
+        <Route path="/verify-phone" element={<VerifyWrapper />} />
+        <Route path="/register" element={<RegisterWithPhone />} />
+        <Route path="*" element={<RoleSelection />} />
+      </Routes>
+    );
+  }
+
+  // user logged in and role selected -> show dashboard
+  return <DashboardLayout user={user} logout={logout} />;
 }
