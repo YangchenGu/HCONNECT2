@@ -10,6 +10,12 @@ export default function RoleSelection() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const enterDemoDashboard = () => {
+    localStorage.setItem("hconnect_demo_mode", "true");
+    localStorage.setItem("hconnect_demo_role", "doctor");
+    window.location.href = "/";
+  };
+
   const handleContinue = async () => {
     setError("");
     if (!role) return setError("Please select a role.");
@@ -91,6 +97,14 @@ export default function RoleSelection() {
           className="w-full mt-6 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
         >
           {loading ? "Processing..." : "Continue"}
+        </button>
+
+        <button
+          type="button"
+          onClick={enterDemoDashboard}
+          className="w-full mt-3 bg-slate-100 text-slate-800 py-3 rounded-lg font-semibold hover:bg-slate-200"
+        >
+          Enter Demo Dashboard
         </button>
       </div>
     </div>

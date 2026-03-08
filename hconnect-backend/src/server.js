@@ -67,11 +67,19 @@ const verifiedPhoneTokens = new Map();
 
 const SMS_CODE_LENGTH = Math.max(4, Math.min(8, Number(process.env.SMS_CODE_LENGTH || 6)));
 const SMS_CODE_TTL_MS = Math.max(60 * 1000, Number(process.env.SMS_CODE_TTL_MS || 5 * 60 * 1000));
+const ALLOW_ALL_PHONES_FOR_TESTING = String(process.env.ALLOW_ALL_PHONES_FOR_TESTING || "false").toLowerCase() === "true";
+const BYPASS_SMS_VERIFICATION_FOR_TESTING = String(process.env.BYPASS_SMS_VERIFICATION_FOR_TESTING || "false").toLowerCase() === "true";
 
 function generateNumericCode(length) {
   const min = Math.pow(10, length - 1);
   const max = Math.pow(10, length) - 1;
   return Math.floor(min + Math.random() * (max - min + 1)).toString();
+}
+
+function issuePhoneVerificationToken(phoneNumber) {
+  const token = Math.random().toString(36).substring(2, 12) + Math.random().toString(36).substring(2, 8);
+  verifiedPhoneTokens.set(token, { phoneNumber, expiresAt: Date.now() + 15 * 60 * 1000 });
+  return token;
 }
 
 // helper to send sms and store code
@@ -168,12 +176,24 @@ app.post("/public/send-sms", async (req, res) => {
     return res.status(400).json({ error: "Phone number is required" });
   }
   try {
-    // check provider exists in pre-registered table but do NOT reveal details to client
-    const prov = await db.query(`SELECT "ProviderID" FROM healthcare_providers WHERE phone_number=$1`, [phoneNumber]);
-    if (!prov.rows.length) {
-      // generic message to avoid leaking existence
-      return res.status(400).json({ error: "Phone not eligible" });
+    if (!ALLOW_ALL_PHONES_FOR_TESTING) {
+      // check provider exists in pre-registered table but do NOT reveal details to client
+      const prov = await db.query(`SELECT "ProviderID" FROM healthcare_providers WHERE phone_number=$1`, [phoneNumber]);
+      if (!prov.rows.length) {
+        // generic message to avoid leaking existence
+        return res.status(400).json({ error: "Phone not eligible" });
+      }
     }
+
+    if (BYPASS_SMS_VERIFICATION_FOR_TESTING) {
+      const verificationToken = issuePhoneVerificationToken(phoneNumber);
+      return res.json({
+        message: "SMS verification bypassed in testing mode",
+        verificationToken,
+        bypassVerification: true,
+      });
+    }
+
     await sendSmsHelper(phoneNumber, res);
   } catch (err) {
     console.error("/public/send-sms error:", err);
@@ -241,7 +261,27 @@ app.post("/api/verify-sms", checkJwt, async (req, res) => {
 // 验证短信验证码 (public, used during pre-registration)
 app.post("/public/verify-sms", async (req, res) => {
   const { phoneNumber, code } = req.body;
-  if (!phoneNumber || !code) {
+  if (!phoneNumber) {
+    return res.status(400).json({ error: "Phone number is required" });
+  }
+
+  if (BYPASS_SMS_VERIFICATION_FOR_TESTING) {
+    if (!ALLOW_ALL_PHONES_FOR_TESTING) {
+      const prov = await db.query(`SELECT "ProviderID" FROM healthcare_providers WHERE phone_number=$1`, [phoneNumber]);
+      if (!prov.rows.length) {
+        return res.status(400).json({ error: "Phone not eligible" });
+      }
+    }
+
+    const verificationToken = issuePhoneVerificationToken(phoneNumber);
+    return res.json({
+      message: "Phone verification bypassed in testing mode",
+      verificationToken,
+      bypassVerification: true,
+    });
+  }
+
+  if (!code) {
     return res.status(400).json({ error: "Phone number and code are required" });
   }
   const stored = smsVerificationCodes.get(phoneNumber);
@@ -259,8 +299,7 @@ app.post("/public/verify-sms", async (req, res) => {
   smsVerificationCodes.delete(phoneNumber);
 
   // issue a short-lived verification token the frontend can present to the create-user endpoint
-  const token = Math.random().toString(36).substring(2, 12) + Math.random().toString(36).substring(2, 8);
-  verifiedPhoneTokens.set(token, { phoneNumber, expiresAt: Date.now() + 15 * 60 * 1000 });
+  const token = issuePhoneVerificationToken(phoneNumber);
 
   res.json({ message: "Phone verification successful", verificationToken: token });
 });
@@ -284,14 +323,27 @@ app.post("/internal/create-auth0-user", async (req, res) => {
     }
 
     // ensure phone belongs to a pre-registered provider and not already used
+    // In testing mode, create a temporary provider record when not found.
+    let providerId;
     const provRes = await db.query(
       `SELECT "ProviderID" FROM healthcare_providers WHERE phone_number=$1`,
       [phoneNumber]
     );
     if (!provRes.rows.length) {
-      return res.status(400).json({ error: "Phone not eligible" });
+      if (!ALLOW_ALL_PHONES_FOR_TESTING) {
+        return res.status(400).json({ error: "Phone not eligible" });
+      }
+
+      const inserted = await db.query(
+        `INSERT INTO healthcare_providers (country, phone_number, provider_name, institution, specialty)
+         VALUES ($1,$2,$3,$4,$5)
+         RETURNING "ProviderID"`,
+        ["TS", phoneNumber, "Test Provider", "HCONNECT Test", "General"]
+      );
+      providerId = inserted.rows[0].ProviderID;
+    } else {
+      providerId = provRes.rows[0].ProviderID;
     }
-    const providerId = provRes.rows[0].ProviderID;
 
     const registered = await db.query(`SELECT 1 FROM doctor_profiles WHERE "ProviderID"=$1`, [providerId]);
     if (registered.rows.length) {

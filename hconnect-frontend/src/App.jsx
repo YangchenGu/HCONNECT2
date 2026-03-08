@@ -23,6 +23,9 @@ import DoctorEntry from "./pages/DoctorEntry.jsx";
 import RegisterWithPhone from "./pages/RegisterWithPhone.jsx";
 import { apiUrl } from "./lib/api.js";
 
+const DEMO_MODE_KEY = "hconnect_demo_mode";
+const DEMO_ROLE_KEY = "hconnect_demo_role";
+
 function titleFromPath(pathname) {
   if (pathname === "/") return "Dashboard";
   if (pathname.startsWith("/patients/new")) return "Add New Patient";
@@ -76,9 +79,22 @@ export default function App() {
   const { isAuthenticated, isLoading, user, logout, getAccessTokenSilently } = useAuth0();
   const [userRole, setUserRole] = useState(null);
   const [roleResolved, setRoleResolved] = useState(false);
+  const [demoMode, setDemoMode] = useState(() => localStorage.getItem(DEMO_MODE_KEY) === "true");
+
+  useEffect(() => {
+    const onStorage = () => setDemoMode(localStorage.getItem(DEMO_MODE_KEY) === "true");
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   useEffect(() => {
     const loadRole = async () => {
+      if (demoMode) {
+        setUserRole(localStorage.getItem(DEMO_ROLE_KEY) || "doctor");
+        setRoleResolved(true);
+        return;
+      }
+
       if (!user) {
         setUserRole(null);
         setRoleResolved(true);
@@ -124,7 +140,7 @@ export default function App() {
 
     setRoleResolved(false);
     loadRole();
-  }, [user, isAuthenticated, getAccessTokenSilently]);
+  }, [user, isAuthenticated, getAccessTokenSilently, demoMode]);
 
   if (isLoading) {
     return (
@@ -161,5 +177,18 @@ export default function App() {
   }
 
   // user logged in and role selected -> show dashboard
-  return <DashboardLayout user={user} logout={logout} />;
+  const effectiveUser = user || {
+    name: "Demo User",
+    email: "demo@hconnect.space",
+  };
+
+  const effectiveLogout = demoMode
+    ? () => {
+        localStorage.removeItem(DEMO_MODE_KEY);
+        localStorage.removeItem(DEMO_ROLE_KEY);
+        window.location.href = "/";
+      }
+    : logout;
+
+  return <DashboardLayout user={effectiveUser} logout={effectiveLogout} />;
 }

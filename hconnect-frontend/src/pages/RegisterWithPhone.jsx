@@ -57,9 +57,17 @@ export default function RegisterWithPhone() {
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || payload.message || "发送验证码失败");
+      if (payload.verificationToken) {
+        setVerificationToken(payload.verificationToken);
+        setVerifiedPhoneNumber(full);
+      }
       setCooldownSeconds(5);
       setMessageType("success");
-      setMessage("Verification code sent. It remains valid for 5 minutes unless you request a new code.");
+      setMessage(
+        payload.bypassVerification
+          ? "Testing mode enabled: phone verification has been bypassed. You can continue registration now."
+          : "Verification code sent. It remains valid for 5 minutes unless you request a new code."
+      );
     } catch (e) {
       setMessageType("error");
       setMessage(e.message || "Failed to send verification code.");
