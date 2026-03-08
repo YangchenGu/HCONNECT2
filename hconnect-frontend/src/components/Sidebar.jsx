@@ -32,7 +32,12 @@ const NAV = [
 
 export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
   return (
-    <div className={cn("h-screen bg-slate-950 text-slate-100 flex flex-col", collapsed ? "w-20" : "w-72")}>
+    <aside
+      className={cn(
+        "sticky top-0 self-start h-screen bg-slate-950 text-slate-100 flex flex-col shrink-0",
+        collapsed ? "w-20" : "w-72"
+      )}
+    >
       <div className="flex items-center justify-between px-4 py-4">
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-xl bg-white/10 grid place-items-center">🧬</div>
@@ -53,7 +58,7 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
         </button>
       </div>
 
-      <div className="px-2 pb-4 overflow-y-auto">
+      <div className="px-2 pb-4 flex-1 min-h-0 overflow-y-auto hide-scrollbar">
         {NAV.map((group) => (
           <div key={group.section} className="mt-3">
             {!collapsed && (
@@ -109,6 +114,6 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
           )}
         </div>
       </div>
-    </div>
+    </aside>
   );
 }

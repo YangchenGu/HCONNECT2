@@ -48,9 +48,9 @@ function DashboardLayout({ user, logout }) {
   const title = useMemo(() => titleFromPath(location.pathname), [location.pathname]);
 
   return (
-    <div className="flex bg-slate-50">
+    <div className="flex items-start min-h-screen bg-slate-50">
       <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} user={user} logout={logout} />
-      <div className="flex-1 min-h-screen">
+      <div className="flex-1 min-h-screen overflow-x-hidden">
         <Topbar title={title} search={search} setSearch={setSearch} />
 
         <Routes>
