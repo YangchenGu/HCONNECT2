@@ -141,89 +141,89 @@ export default function RegisterWithPhone() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-      <div className="bg-white p-8 rounded-xl shadow-md w-full max-w-lg">
+    <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(circle_at_20%_10%,#2f2758_0%,#1b1640_45%,#100c24_100%)] p-4 text-slate-100">
+      <div className="bg-[#171133]/92 p-8 rounded-xl border border-violet-300/28 shadow-2xl w-full max-w-lg">
         <div className="mb-5">
-          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 mb-3">
+          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-violet-300/18 text-violet-100 mb-3">
             HCONNECT • Provider Onboarding
           </span>
-          <h2 className="text-2xl font-semibold">Register (Phone Verification Required)</h2>
-          <p className="text-sm text-gray-600 mt-1">
+          <h2 className="text-2xl font-semibold text-slate-100">Register (Phone Verification Required)</h2>
+          <p className="text-sm text-slate-300 mt-1">
             Complete identity verification before creating your clinical access account.
           </p>
         </div>
 
         <div className="grid gap-3">
-          <label className="block text-sm text-gray-700">Country / Dial Code</label>
+          <label className="block text-sm text-slate-300">Country / Dial Code</label>
           <select
             value={countryCode}
             onChange={(e) => setCountryCode(e.target.value)}
             disabled={!!verificationToken}
-            className="mt-1 mb-1 border rounded px-3 py-2 w-full disabled:bg-gray-100"
+            className="mt-1 mb-1 border border-slate-500/40 bg-slate-900/60 text-slate-100 rounded px-3 py-2 w-full disabled:opacity-60"
           >
             {countryOptions.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
           </select>
 
-          <label className="block text-sm text-gray-700">Phone Number (digits only)</label>
+          <label className="block text-sm text-slate-300">Phone Number (digits only)</label>
           <input
             type="tel"
             value={phone}
             onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
             disabled={!!verificationToken}
-            className="mt-1 mb-1 border rounded px-3 py-2 w-full disabled:bg-gray-100"
+            className="mt-1 mb-1 border border-slate-500/40 bg-slate-900/60 text-slate-100 rounded px-3 py-2 w-full disabled:opacity-60"
           />
 
           <div className="flex gap-2">
             <button
               onClick={sendCode}
               disabled={loading || cooldownSeconds > 0 || !!verificationToken}
-              className="flex-1 bg-blue-600 text-white py-2 rounded disabled:bg-gray-400 disabled:cursor-not-allowed"
+              className="flex-1 bg-violet-500/90 text-white py-2 rounded disabled:bg-slate-500 disabled:cursor-not-allowed"
             >
               {verificationToken ? "Code Verified" : cooldownSeconds > 0 ? `Resend in ${cooldownSeconds}s` : "Send Code"}
             </button>
-            <input placeholder="Code" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} className="w-40 px-3 py-2 border rounded" />
-            <button onClick={verifyCode} disabled={loading || !!verificationToken} className="bg-green-600 text-white px-4 rounded disabled:bg-gray-400 disabled:cursor-not-allowed">Verify</button>
+            <input placeholder="Code" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} className="w-40 px-3 py-2 border border-slate-500/40 bg-slate-900/60 text-slate-100 rounded" />
+            <button onClick={verifyCode} disabled={loading || !!verificationToken} className="bg-emerald-600 text-white px-4 rounded disabled:bg-slate-500 disabled:cursor-not-allowed">Verify</button>
           </div>
 
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-slate-400">
             Code validity: 5 minutes. Requesting a new code invalidates the previous one.
           </p>
 
           <hr className="my-2" />
 
-          <label className="block text-sm text-gray-700">Full Name</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 mb-1 border rounded px-3 py-2 w-full" />
+          <label className="block text-sm text-slate-300">Full Name</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 mb-1 border border-slate-500/40 bg-slate-900/60 text-slate-100 rounded px-3 py-2 w-full" />
 
-          <label className="block text-sm text-gray-700">Email</label>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 mb-1 border rounded px-3 py-2 w-full" />
+          <label className="block text-sm text-slate-300">Email</label>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 mb-1 border border-slate-500/40 bg-slate-900/60 text-slate-100 rounded px-3 py-2 w-full" />
 
-          <label className="block text-sm text-gray-700">Password</label>
+          <label className="block text-sm text-slate-300">Password</label>
           <div className="flex gap-2 items-center">
             <input
               type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="mt-1 mb-1 border rounded px-3 py-2 w-full"
+              className="mt-1 mb-1 border border-slate-500/40 bg-slate-900/60 text-slate-100 rounded px-3 py-2 w-full"
             />
             <button
               type="button"
               onClick={() => setShowPassword((prev) => !prev)}
-              className="px-3 py-2 mt-1 mb-1 border rounded text-sm"
+              className="px-3 py-2 mt-1 mb-1 border border-slate-500/40 rounded text-sm text-slate-200"
             >
               {showPassword ? "Hide" : "Show"}
             </button>
           </div>
 
-          <button onClick={submitRegistration} disabled={loading || !verificationToken} className="w-full bg-indigo-600 text-white py-2 rounded disabled:bg-gray-400 disabled:cursor-not-allowed">Create HCONNECT Account</button>
+          <button onClick={submitRegistration} disabled={loading || !verificationToken} className="w-full bg-violet-500/90 text-white py-2 rounded disabled:bg-slate-500 disabled:cursor-not-allowed">Create HCONNECT Account</button>
 
           {message && (
-            <div className={`mt-2 text-sm ${messageType === "error" ? "text-red-600" : messageType === "success" ? "text-green-600" : "text-gray-700"}`}>
+            <div className={`mt-2 text-sm ${messageType === "error" ? "text-rose-300" : messageType === "success" ? "text-emerald-300" : "text-slate-300"}`}>
               {message}
             </div>
           )}
         </div>
 
-        <div className="mt-4 text-sm text-gray-600">
+        <div className="mt-4 text-sm text-slate-300">
           <button onClick={() => navigate(-1)} className="underline">Back</button>
         </div>
       </div>

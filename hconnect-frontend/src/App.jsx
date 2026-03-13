@@ -1,9 +1,8 @@
 import React, { useMemo, useState, useEffect } from "react";
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { useAuth0 } from "@auth0/auth0-react";
 import Sidebar from "./components/Sidebar.jsx";
 import Topbar from "./components/Topbar.jsx";
-import LoginPage from "./pages/LoginPage.jsx";
 
 import Dashboard from "./pages/Dashboard.jsx";
 import Patients from "./pages/Patients.jsx";
@@ -16,6 +15,16 @@ import AccountSettings from "./pages/AccountSettings.jsx";
 import NotificationSettings from "./pages/NotificationSettings.jsx";
 import ProfileCustomization from "./pages/ProfileCustomization.jsx";
 import Help from "./pages/Help.jsx";
+import PatientEntry from "./pages/PatientEntry.jsx";
+import PatientRegister from "./pages/PatientRegister.jsx";
+import PatientSidebar from "./components/patient/PatientSidebar.jsx";
+import PatientTopbar from "./components/patient/PatientTopbar.jsx";
+import PatientDashboard from "./pages/patient/PatientDashboard.jsx";
+import PatientHistory from "./pages/patient/PatientHistory.jsx";
+import PatientReportForm from "./pages/patient/PatientReportForm.jsx";
+import PatientAppointments from "./pages/patient/PatientAppointments.jsx";
+import PatientAccount from "./pages/patient/PatientAccount.jsx";
+import PatientNotifications from "./pages/patient/PatientNotifications.jsx";
 
 import RoleSelection from "./pages/RoleSelection.jsx";
 import VerifyWrapper from "./pages/VerifyWrapper.jsx";
@@ -23,8 +32,9 @@ import DoctorEntry from "./pages/DoctorEntry.jsx";
 import RegisterWithPhone from "./pages/RegisterWithPhone.jsx";
 import { apiUrl } from "./lib/api.js";
 
-const DEMO_MODE_KEY = "hconnect_demo_mode";
-const DEMO_ROLE_KEY = "hconnect_demo_role";
+const APP_ORIGIN =
+  import.meta.env.VITE_APP_ORIGIN ||
+  (import.meta.env.DEV ? "http://localhost:5173" : window.location.origin);
 
 function titleFromPath(pathname) {
   if (pathname === "/") return "Dashboard";
@@ -40,18 +50,38 @@ function titleFromPath(pathname) {
   return "Dashboard";
 }
 
-function DashboardLayout({ user, logout }) {
+function DashboardLayout({ user, logout, getAccessTokenSilently }) {
   const [collapsed, setCollapsed] = useState(false);
   const [search, setSearch] = useState("");
+  const [notificationCount, setNotificationCount] = useState(0);
   const location = useLocation();
 
   const title = useMemo(() => titleFromPath(location.pathname), [location.pathname]);
 
+  useEffect(() => {
+    const loadDoctorNotificationCount = async () => {
+      try {
+        const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+        const res = await fetch(apiUrl("/api/doctor/notifications"), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        const nextCount = (payload.appointmentRequests?.length || 0) + (payload.pendingMatches?.length || 0);
+        setNotificationCount(nextCount);
+      } catch {
+        setNotificationCount(0);
+      }
+    };
+
+    loadDoctorNotificationCount();
+  }, [location.pathname, getAccessTokenSilently]);
+
   return (
-    <div className="flex items-start min-h-screen bg-slate-50">
+    <div className="doctor-theme flex items-start min-h-screen bg-[linear-gradient(180deg,#1a1533_0%,#120f27_100%)] text-slate-100">
       <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} user={user} logout={logout} />
       <div className="flex-1 min-h-screen overflow-x-hidden">
-        <Topbar title={title} search={search} setSearch={setSearch} />
+        <Topbar title={title} search={search} setSearch={setSearch} notificationCount={notificationCount} />
 
         <Routes>
           <Route path="/" element={<Dashboard />} />
@@ -68,7 +98,61 @@ function DashboardLayout({ user, logout }) {
           <Route path="/settings/profile" element={<ProfileCustomization />} />
 
           <Route path="/help" element={<Help />} />
-          <Route path="*" element={<Placeholder title="Not Found" hint="This route does not exist." />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
+    </div>
+  );
+}
+
+function patientTitleFromPath(pathname) {
+  if (pathname === "/") return "Patient Dashboard";
+  if (pathname.startsWith("/patient/history")) return "My Health History";
+  if (pathname.startsWith("/patient/report")) return "Daily Condition Report";
+  if (pathname.startsWith("/patient/appointments")) return "Appointments";
+  if (pathname.startsWith("/patient/notifications")) return "Notifications";
+  if (pathname.startsWith("/patient/account")) return "Account Settings";
+  return "Patient Dashboard";
+}
+
+function PatientLayout({ user, logout, getAccessTokenSilently }) {
+  const location = useLocation();
+  const [notificationCount, setNotificationCount] = useState(0);
+  const title = useMemo(() => patientTitleFromPath(location.pathname), [location.pathname]);
+
+  useEffect(() => {
+    const loadPatientNotificationCount = async () => {
+      try {
+        const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+        const res = await fetch(apiUrl("/api/patient/notifications"), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        const nextCount = payload.incomingMatches?.length || 0;
+        setNotificationCount(nextCount);
+      } catch {
+        setNotificationCount(0);
+      }
+    };
+
+    loadPatientNotificationCount();
+  }, [location.pathname, getAccessTokenSilently]);
+
+  return (
+    <div className="patient-theme flex items-start min-h-screen bg-[#0c1328]">
+      <PatientSidebar user={user} logout={logout} />
+      <div className="flex-1 min-h-screen overflow-x-hidden bg-[linear-gradient(180deg,#12203c_0%,#0d1730_100%)]">
+        <PatientTopbar title={title} notificationCount={notificationCount} />
+
+        <Routes>
+          <Route path="/" element={<PatientDashboard />} />
+          <Route path="/patient/history" element={<PatientHistory />} />
+          <Route path="/patient/report" element={<PatientReportForm />} />
+          <Route path="/patient/appointments" element={<PatientAppointments />} />
+          <Route path="/patient/notifications" element={<PatientNotifications />} />
+          <Route path="/patient/account" element={<PatientAccount />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
     </div>
@@ -79,31 +163,11 @@ export default function App() {
   const { isAuthenticated, isLoading, user, logout, getAccessTokenSilently } = useAuth0();
   const [userRole, setUserRole] = useState(null);
   const [roleResolved, setRoleResolved] = useState(false);
-  const [demoMode, setDemoMode] = useState(() => localStorage.getItem(DEMO_MODE_KEY) === "true");
-
-  useEffect(() => {
-    const onStorage = () => setDemoMode(localStorage.getItem(DEMO_MODE_KEY) === "true");
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
 
   useEffect(() => {
     const loadRole = async () => {
-      if (demoMode) {
-        setUserRole(localStorage.getItem(DEMO_ROLE_KEY) || "doctor");
-        setRoleResolved(true);
-        return;
-      }
-
       if (!user) {
         setUserRole(null);
-        setRoleResolved(true);
-        return;
-      }
-
-      const savedRole = localStorage.getItem(`user_role_${user.sub}`);
-      if (savedRole) {
-        setUserRole(savedRole);
         setRoleResolved(true);
         return;
       }
@@ -115,6 +179,7 @@ export default function App() {
       }
 
       try {
+        // Security: trust backend role source for authenticated users.
         const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
         const res = await fetch(apiUrl("/api/me/role"), {
           headers: { Authorization: `Bearer ${token}` },
@@ -130,6 +195,7 @@ export default function App() {
           localStorage.setItem(`user_role_${user.sub}`, payload.role);
         } else {
           setUserRole(null);
+          localStorage.removeItem(`user_role_${user.sub}`);
         }
       } catch {
         setUserRole(null);
@@ -140,14 +206,14 @@ export default function App() {
 
     setRoleResolved(false);
     loadRole();
-  }, [user, isAuthenticated, getAccessTokenSilently, demoMode]);
+  }, [user, isAuthenticated, getAccessTokenSilently]);
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#1a1533_0%,#120f27_100%)] flex items-center justify-center text-slate-300">
         <div className="text-center">
-          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400"></div>
+          <p className="mt-4 text-slate-300">Loading...</p>
         </div>
       </div>
     );
@@ -155,10 +221,10 @@ export default function App() {
 
   if (isAuthenticated && !roleResolved) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#1a1533_0%,#120f27_100%)] flex items-center justify-center text-slate-300">
         <div className="text-center">
-          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          <p className="mt-4 text-gray-600">Loading profile...</p>
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400"></div>
+          <p className="mt-4 text-slate-300">Loading profile...</p>
         </div>
       </div>
     );
@@ -168,6 +234,8 @@ export default function App() {
   if (!userRole) {
     return (
       <Routes>
+        <Route path="/patient/entry" element={<PatientEntry />} />
+        <Route path="/patient/register" element={<PatientRegister />} />
         <Route path="/doctor/entry" element={<DoctorEntry />} />
         <Route path="/verify-phone" element={<VerifyWrapper />} />
         <Route path="/register" element={<RegisterWithPhone />} />
@@ -178,17 +246,15 @@ export default function App() {
 
   // user logged in and role selected -> show dashboard
   const effectiveUser = user || {
-    name: "Demo User",
-    email: "demo@hconnect.space",
+    name: "User",
+    email: "user@localhost",
   };
 
-  const effectiveLogout = demoMode
-    ? () => {
-        localStorage.removeItem(DEMO_MODE_KEY);
-        localStorage.removeItem(DEMO_ROLE_KEY);
-        window.location.href = "/";
-      }
-    : logout;
+  const effectiveLogout = () => logout({ logoutParams: { returnTo: APP_ORIGIN } });
 
-  return <DashboardLayout user={effectiveUser} logout={effectiveLogout} />;
+  if (userRole === "patient") {
+    return <PatientLayout user={effectiveUser} logout={effectiveLogout} getAccessTokenSilently={getAccessTokenSilently} />;
+  }
+
+  return <DashboardLayout user={effectiveUser} logout={effectiveLogout} getAccessTokenSilently={getAccessTokenSilently} />;
 }

@@ -24,6 +24,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
       }}
       onRedirectCallback={onRedirectCallback}
       cacheLocation="localstorage"
+      useRefreshTokens={true}
     >
       <BrowserRouter>
         <App />

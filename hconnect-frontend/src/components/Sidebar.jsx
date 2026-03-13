@@ -18,7 +18,7 @@ const NAV = [
       { to: "/reports/detail", label: "Detailed report", icon: "📈" },
     ],
   },
-  { section: "Notifications", items: [{ to: "/notifications", label: "Alerts", icon: "🔔", badge: 3 }] },
+  { section: "Notifications", items: [{ to: "/notifications", label: "Alerts", icon: "🔔" }] },
   {
     section: "Settings",
     items: [
@@ -34,7 +34,7 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
   return (
     <aside
       className={cn(
-        "sticky top-0 self-start h-screen bg-slate-950 text-slate-100 flex flex-col shrink-0",
+        "sticky top-0 self-start h-screen bg-[#120f27] text-slate-100 border-r border-violet-400/20 flex flex-col shrink-0",
         collapsed ? "w-20" : "w-72"
       )}
     >
@@ -43,8 +43,8 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
           <div className="h-10 w-10 rounded-xl bg-white/10 grid place-items-center">🧬</div>
           {!collapsed && (
             <div className="leading-tight">
-              <div className="font-semibold">Hconnect</div>
-              <div className="text-xs text-slate-300">Health Provider</div>
+              <div className="font-semibold text-slate-100">Hconnect</div>
+              <div className="text-xs text-violet-200/80">Health Provider</div>
             </div>
           )}
         </div>
@@ -72,12 +72,12 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
                   className={({ isActive }) =>
                     cn(
                       "w-full flex items-center gap-3 rounded-xl px-3 py-2 transition",
-                      isActive ? "bg-white/12 text-white" : "hover:bg-white/8 text-slate-200"
+                      isActive ? "bg-violet-500/22 text-white" : "hover:bg-violet-400/12 text-slate-200"
                     )
                   }
                   title={collapsed ? it.label : undefined}
                 >
-                  <div className="w-9 h-9 rounded-xl bg-white/8 grid place-items-center">{it.icon}</div>
+                  <div className="w-9 h-9 rounded-xl bg-violet-300/12 grid place-items-center">{it.icon}</div>
                   {!collapsed && (
                     <>
                       <div className="flex-1 text-left text-sm">{it.label}</div>
@@ -94,7 +94,7 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
       </div>
 
       <div className="mt-auto p-3">
-        <div className="rounded-2xl bg-white/8 p-3">
+        <div className="rounded-2xl bg-violet-300/10 p-3 border border-violet-200/10">
           <div className="flex items-center gap-3 mb-2">
             <div className="h-10 w-10 rounded-xl bg-white/10 grid place-items-center">👨‍⚕️</div>
             {!collapsed && (
@@ -106,7 +106,7 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
           </div>
           {!collapsed && (
             <button
-              onClick={() => logout({ returnTo: window.location.origin })}
+              onClick={() => logout()}
               className="w-full mt-2 bg-red-600/20 hover:bg-red-600/30 text-red-300 text-sm py-2 rounded-lg transition"
             >
               Logout

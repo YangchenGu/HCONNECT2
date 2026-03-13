@@ -82,6 +82,222 @@ function issuePhoneVerificationToken(phoneNumber) {
   return token;
 }
 
+async function getManagementApiToken() {
+  const m2mClientId = process.env.AUTH0_M2M_CLIENT_ID || process.env.AUTH0_CLIENT_ID;
+  const m2mClientSecret = process.env.AUTH0_M2M_CLIENT_SECRET || process.env.AUTH0_CLIENT_SECRET;
+  if (!process.env.AUTH0_DOMAIN || !m2mClientId || !m2mClientSecret) {
+    throw new Error("Auth0 M2M credentials not configured on server");
+  }
+
+  const tokenResponse = await axios.post(
+    `https://${process.env.AUTH0_DOMAIN}/oauth/token`,
+    {
+      client_id: m2mClientId,
+      client_secret: m2mClientSecret,
+      audience: `https://${process.env.AUTH0_DOMAIN}/api/v2/`,
+      grant_type: "client_credentials",
+    }
+  );
+
+  return tokenResponse.data.access_token;
+}
+
+function getReadableAuth0Error(error, fallback = "Request failed") {
+  const data = error?.response?.data;
+  if (!data) return fallback;
+
+  const detailText = Array.isArray(data.details)
+    ? data.details
+        .map((d) => d?.message || d?.error || "")
+        .filter(Boolean)
+        .join("; ")
+    : "";
+
+  const base = data.message || data.description || data.error_description || data.error || fallback;
+  return detailText ? `${base} (${detailText})` : base;
+}
+
+async function initDbArtifacts() {
+  // Stores doctor -> patient match requests before a formal relationship is created.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS doctor_patient_match_requests (
+      "RequestID" SERIAL PRIMARY KEY,
+      "DoctorID" INT NOT NULL REFERENCES doctor_profiles("DoctorID") ON DELETE CASCADE,
+      "PatientID" INT NOT NULL REFERENCES patient_profiles("PatientID") ON DELETE CASCADE,
+      "status" VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK ("status" IN ('pending', 'accepted', 'rejected', 'cancelled')),
+      "message" TEXT,
+      "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      "responded_at" TIMESTAMP
+    )
+  `);
+
+  await db.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_pending_match_request
+    ON doctor_patient_match_requests ("DoctorID", "PatientID")
+    WHERE "status" = 'pending'
+  `);
+
+  // Appointment slots and requests used by patient booking + doctor notifications.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS appointment_slots (
+      "SlotID" SERIAL PRIMARY KEY,
+      "DoctorID" INT NOT NULL REFERENCES doctor_profiles("DoctorID") ON DELETE CASCADE,
+      "start_time" TIMESTAMP NOT NULL,
+      "end_time" TIMESTAMP NOT NULL,
+      "is_booked" BOOLEAN DEFAULT FALSE,
+      "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Store slot availability outside appointment_slots to avoid requiring table ownership for ALTER TABLE.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS appointment_slot_availability (
+      "SlotID" INT PRIMARY KEY REFERENCES appointment_slots("SlotID") ON DELETE CASCADE,
+      "is_available" BOOLEAN NOT NULL DEFAULT TRUE,
+      "updated_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS appointments (
+      "AppointmentID" SERIAL PRIMARY KEY,
+      "DoctorID" INT NOT NULL REFERENCES doctor_profiles("DoctorID") ON DELETE CASCADE,
+      "PatientID" INT NOT NULL REFERENCES patient_profiles("PatientID") ON DELETE CASCADE,
+      "SlotID" INT NOT NULL REFERENCES appointment_slots("SlotID") ON DELETE CASCADE,
+      "status" VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK ("status" IN ('pending', 'confirmed', 'cancelled', 'completed')),
+      "reason" TEXT,
+      "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+async function getUserBySub(sub) {
+  const userRes = await db.query(
+    `SELECT "UserID", "role", "email", "name", "auth0_id" FROM users WHERE "auth0_id"=$1 LIMIT 1`,
+    [sub]
+  );
+  return userRes.rows[0] || null;
+}
+
+async function ensurePatientProfileByUserId(userId) {
+  await db.query(`INSERT INTO patient_profiles ("UserID") VALUES ($1) ON CONFLICT ("UserID") DO NOTHING`, [userId]);
+  const p = await db.query(`SELECT "PatientID" FROM patient_profiles WHERE "UserID"=$1 LIMIT 1`, [userId]);
+  return p.rows[0] || null;
+}
+
+async function getDoctorProfileByUserId(userId) {
+  const d = await db.query(`SELECT "DoctorID", "ProviderID" FROM doctor_profiles WHERE "UserID"=$1 LIMIT 1`, [userId]);
+  return d.rows[0] || null;
+}
+
+async function ensureDoctorProfileByUser(user, registrationIp = null) {
+  const existing = await getDoctorProfileByUserId(user.UserID);
+  if (existing) return existing;
+
+  const providerName = String(user.name || user.email || `Doctor ${user.UserID}`).slice(0, 255);
+  const syntheticPhone = `doc-${user.UserID}`;
+
+  const provider = await db.query(
+    `INSERT INTO healthcare_providers ("country", "phone_number", "provider_name", "institution", "specialty")
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT ("country", "phone_number") DO UPDATE SET
+       "provider_name"=EXCLUDED."provider_name"
+     RETURNING "ProviderID"`,
+    ["ZZ", syntheticPhone, providerName, "Unverified", "General"]
+  );
+
+  const providerId = provider.rows[0]?.ProviderID;
+  if (!providerId) {
+    throw new Error("Failed to provision provider for doctor profile");
+  }
+
+  await db.query(
+    `INSERT INTO doctor_profiles ("UserID", "ProviderID", "registration_ip")
+     VALUES ($1,$2,$3)
+     ON CONFLICT ("UserID") DO NOTHING`,
+    [user.UserID, providerId, registrationIp]
+  );
+
+  return await getDoctorProfileByUserId(user.UserID);
+}
+
+async function ensureDefaultSlotsForDoctor(doctorId) {
+  const now = new Date();
+  const minutes = [0, 30];
+  const slotHours = [9, 10, 14, 15];
+
+  for (let offset = 1; offset <= 7; offset += 1) {
+    const day = new Date(now);
+    day.setDate(day.getDate() + offset);
+
+    for (const hour of slotHours) {
+      for (const minute of minutes) {
+        const start = new Date(day);
+        start.setHours(hour, minute, 0, 0);
+        const end = new Date(start);
+        end.setMinutes(end.getMinutes() + 30);
+
+        await db.query(
+          `INSERT INTO appointment_slots ("DoctorID", "start_time", "end_time", "is_booked")
+           SELECT $1,$2,$3,FALSE
+           WHERE NOT EXISTS (
+             SELECT 1 FROM appointment_slots
+             WHERE "DoctorID"=$1 AND "start_time"=$2
+           )`,
+          [doctorId, start.toISOString(), end.toISOString()]
+        );
+      }
+    }
+  }
+
+  // Ensure every slot has an availability row (default TRUE).
+  await db.query(
+    `INSERT INTO appointment_slot_availability ("SlotID", "is_available")
+     SELECT s."SlotID", TRUE
+     FROM appointment_slots s
+     LEFT JOIN appointment_slot_availability a ON a."SlotID"=s."SlotID"
+     WHERE s."DoctorID"=$1 AND a."SlotID" IS NULL`,
+    [doctorId]
+  );
+}
+
+function normalizeDateOnlyString(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  return raw;
+}
+
+function buildEditableDateWindow() {
+  const now = new Date();
+  const values = [];
+  for (let i = 1; i <= 7; i += 1) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + i);
+    values.push(d.toISOString().slice(0, 10));
+  }
+  return values;
+}
+
+function requireRole(role) {
+  return async (req, res, next) => {
+    try {
+      const sub = req.auth?.payload?.sub;
+      if (!sub) return res.status(400).json({ error: "Invalid token payload" });
+
+      const currentUser = await getUserBySub(sub);
+      if (!currentUser) return res.status(404).json({ error: "User not found" });
+      if (currentUser.role !== role) return res.status(403).json({ error: `Requires ${role} role` });
+
+      req.currentUser = currentUser;
+      next();
+    } catch (error) {
+      console.error("requireRole error:", error.message || error);
+      res.status(500).json({ error: "Role check failed" });
+    }
+  };
+}
+
 // helper to send sms and store code
 async function sendSmsHelper(phoneNumber, res) {
   try {
@@ -350,23 +566,7 @@ app.post("/internal/create-auth0-user", async (req, res) => {
       return res.status(409).json({ error: "Phone already registered" });
     }
 
-    // Get Management API token (use M2M credentials if provided, fallback to AUTH0_CLIENT_ID/SECRET)
-    const m2mClientId = process.env.AUTH0_M2M_CLIENT_ID || process.env.AUTH0_CLIENT_ID;
-    const m2mClientSecret = process.env.AUTH0_M2M_CLIENT_SECRET || process.env.AUTH0_CLIENT_SECRET;
-    if (!process.env.AUTH0_DOMAIN || !m2mClientId || !m2mClientSecret) {
-      return res.status(500).json({ error: "Auth0 M2M credentials not configured on server" });
-    }
-
-    const tokenResponse = await axios.post(
-      `https://${process.env.AUTH0_DOMAIN}/oauth/token`,
-      {
-        client_id: m2mClientId,
-        client_secret: m2mClientSecret,
-        audience: `https://${process.env.AUTH0_DOMAIN}/api/v2/`,
-        grant_type: "client_credentials",
-      }
-    );
-    const mgmtToken = tokenResponse.data.access_token;
+    const mgmtToken = await getManagementApiToken();
 
     // create user in Auth0
     const connection = process.env.AUTH0_DB_CONNECTION || "Username-Password-Authentication";
@@ -412,8 +612,8 @@ app.post("/internal/create-auth0-user", async (req, res) => {
   } catch (error) {
     console.error("/internal/create-auth0-user error:", error.response?.data || error.message || error);
     const status = error.response?.status || 500;
-    const data = error.response?.data || { error: error.message };
-    res.status(status).json(data);
+    const message = getReadableAuth0Error(error, error.message || "Failed to create account");
+    res.status(status).json({ error: message });
   }
 });
 
@@ -550,6 +750,8 @@ app.post("/api/register", checkJwt, async (req, res) => {
               SET "ProviderID"=$2, "registration_ip"=$3`,
           [userId, providerId, req.ip]
         );
+      } else if (role === "patient") {
+        await ensurePatientProfileByUserId(userId);
       }
 
       console.log(`✅ User registered in database: ${email} as ${role}`);
@@ -569,7 +771,787 @@ app.post("/api/register", checkJwt, async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// Public patient registration (no phone verification required)
+app.post("/public/register-patient", async (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: "email, password and name are required" });
+    }
+
+    if (String(password).length < 8) {
+      return res.status(400).json({ error: "Password must be at least 8 characters" });
+    }
+
+    const mgmtToken = await getManagementApiToken();
+    const connection = process.env.AUTH0_DB_CONNECTION || "Username-Password-Authentication";
+
+    const createRes = await axios.post(
+      `https://${process.env.AUTH0_DOMAIN}/api/v2/users`,
+      {
+        connection,
+        email,
+        password,
+        name,
+        email_verified: false,
+      },
+      {
+        headers: { Authorization: `Bearer ${mgmtToken}`, "Content-Type": "application/json" }
+      }
+    );
+
+    const created = createRes.data;
+
+    try {
+      const userWrite = await db.query(
+        `INSERT INTO users ("auth0_id", "email", "name", "role")
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT ("auth0_id") DO UPDATE SET
+           "email"=EXCLUDED."email",
+           "name"=EXCLUDED."name",
+           "role"=EXCLUDED."role",
+           "updated_at"=CURRENT_TIMESTAMP
+         RETURNING "UserID"`,
+        [created.user_id, email, name, "patient"]
+      );
+
+      const userId = userWrite.rows[0]?.UserID;
+      if (userId) {
+        await ensurePatientProfileByUserId(userId);
+      }
+    } catch (dbErr) {
+      console.warn("Could not write local patient row after Auth0 creation:", dbErr.message);
+    }
+
+    return res.json({ success: true, message: "Patient account created", auth0UserId: created.user_id });
+  } catch (error) {
+    console.error("/public/register-patient error:", error.response?.data || error.message || error);
+    const status = error.response?.status || 500;
+    const message = getReadableAuth0Error(error, error.message || "Failed to register patient");
+    return res.status(status).json({ error: message });
+  }
 });
+
+// Delete current account data (for test resets)
+app.delete("/api/account", checkJwt, async (req, res) => {
+  const sub = req.auth?.payload?.sub;
+  if (!sub) {
+    return res.status(400).json({ error: "Invalid token payload" });
+  }
+
+  const client = await db.connect();
+  let deletedDb = false;
+  let deletedAuth0 = false;
+  let deletedUser = null;
+
+  try {
+    await client.query("BEGIN");
+    const deleted = await client.query(
+      `DELETE FROM users WHERE "auth0_id"=$1 RETURNING "UserID", "email", "role"`,
+      [sub]
+    );
+    await client.query("COMMIT");
+
+    if (deleted.rows.length) {
+      deletedDb = true;
+      deletedUser = deleted.rows[0];
+    }
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("/api/account db delete error:", error.message || error);
+    return res.status(500).json({ error: "Failed to delete account data from database" });
+  } finally {
+    client.release();
+  }
+
+  try {
+    const mgmtToken = await getManagementApiToken();
+    const encodedSub = encodeURIComponent(sub);
+    await axios.delete(`https://${process.env.AUTH0_DOMAIN}/api/v2/users/${encodedSub}`, {
+      headers: { Authorization: `Bearer ${mgmtToken}` },
+    });
+    deletedAuth0 = true;
+  } catch (error) {
+    console.warn("/api/account Auth0 delete warning:", error.response?.data || error.message || error);
+  }
+
+  return res.json({
+    success: true,
+    deletedDb,
+    deletedAuth0,
+    deletedUser,
+  });
+});
+
+// Doctor: search patients by email or name and include relationship/request status
+app.get("/api/doctor/patients/search", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const q = String(req.query.q || req.query.email || "").trim();
+    if (!q) return res.status(400).json({ error: "query is required" });
+
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+
+    const likeQ = `%${q.toLowerCase()}%`;
+    const patientUserRes = await db.query(
+      `SELECT "UserID", "email", "name"
+       FROM users
+       WHERE "role"='patient'
+         AND (LOWER("email") LIKE $1 OR LOWER(COALESCE("name", '')) LIKE $1)
+       ORDER BY
+         CASE WHEN LOWER("email") = LOWER($2) THEN 0 ELSE 1 END,
+         "name" NULLS LAST,
+         "email"
+       LIMIT 20`,
+      [likeQ, q]
+    );
+
+    const results = [];
+    for (const patientUser of patientUserRes.rows) {
+      const patientProfile = await ensurePatientProfileByUserId(patientUser.UserID);
+      const relation = await db.query(
+        `SELECT "RelationID", "status" FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 LIMIT 1`,
+        [doctorProfile.DoctorID, patientProfile.PatientID]
+      );
+
+      const pending = await db.query(
+        `SELECT "RequestID", "status", "created_at" FROM doctor_patient_match_requests
+         WHERE "DoctorID"=$1 AND "PatientID"=$2 AND "status"='pending' LIMIT 1`,
+        [doctorProfile.DoctorID, patientProfile.PatientID]
+      );
+
+      results.push({
+        patient: {
+          userId: patientUser.UserID,
+          patientId: patientProfile.PatientID,
+          email: patientUser.email,
+          name: patientUser.name,
+        },
+        relation: relation.rows[0] || null,
+        pendingRequest: pending.rows[0] || null,
+      });
+    }
+
+    return res.json({ query: q, results });
+  } catch (error) {
+    console.error("/api/doctor/patients/search error:", error.message || error);
+    return res.status(500).json({ error: "Failed to search patient" });
+  }
+});
+
+// Doctor: send match request to patient by email
+app.post("/api/doctor/match-requests", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const patientEmail = String(req.body?.patientEmail || "").trim().toLowerCase();
+    const message = String(req.body?.message || "").trim().slice(0, 500);
+    if (!patientEmail) return res.status(400).json({ error: "patientEmail is required" });
+
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+
+    const patientUserRes = await db.query(
+      `SELECT "UserID", "email", "name", "role" FROM users WHERE LOWER("email")=LOWER($1) LIMIT 1`,
+      [patientEmail]
+    );
+    if (!patientUserRes.rows.length) return res.status(404).json({ error: "Patient not found" });
+
+    const patientUser = patientUserRes.rows[0];
+    if (patientUser.role !== "patient") return res.status(400).json({ error: "Target user is not a patient" });
+
+    const patientProfile = await ensurePatientProfileByUserId(patientUser.UserID);
+
+    const relation = await db.query(
+      `SELECT 1 FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 LIMIT 1`,
+      [doctorProfile.DoctorID, patientProfile.PatientID]
+    );
+    if (relation.rows.length) {
+      return res.status(409).json({ error: "Relationship already exists" });
+    }
+
+    const pending = await db.query(
+      `SELECT "RequestID" FROM doctor_patient_match_requests WHERE "DoctorID"=$1 AND "PatientID"=$2 AND "status"='pending' LIMIT 1`,
+      [doctorProfile.DoctorID, patientProfile.PatientID]
+    );
+    if (pending.rows.length) {
+      return res.status(409).json({ error: "A pending request already exists" });
+    }
+
+    const inserted = await db.query(
+      `INSERT INTO doctor_patient_match_requests ("DoctorID", "PatientID", "status", "message")
+       VALUES ($1,$2,'pending',$3)
+       RETURNING "RequestID", "status", "created_at"`,
+      [doctorProfile.DoctorID, patientProfile.PatientID, message || null]
+    );
+
+    return res.json({
+      success: true,
+      request: inserted.rows[0],
+      patient: { email: patientUser.email, name: patientUser.name },
+    });
+  } catch (error) {
+    console.error("/api/doctor/match-requests POST error:", error.message || error);
+    return res.status(500).json({ error: "Failed to create match request" });
+  }
+});
+
+// Doctor: view pending and accepted relationship list
+app.get("/api/doctor/match-requests", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+
+    const pending = await db.query(
+      `SELECT r."RequestID", r."status", r."message", r."created_at",
+              u."name" AS patient_name, u."email" AS patient_email
+       FROM doctor_patient_match_requests r
+       JOIN patient_profiles pp ON pp."PatientID"=r."PatientID"
+       JOIN users u ON u."UserID"=pp."UserID"
+       WHERE r."DoctorID"=$1 AND r."status"='pending'
+       ORDER BY r."created_at" DESC`,
+      [doctorProfile.DoctorID]
+    );
+
+    const linked = await db.query(
+      `SELECT rel."RelationID", rel."status", rel."created_at",
+              u."name" AS patient_name, u."email" AS patient_email
+       FROM doctor_patient_relations rel
+       JOIN patient_profiles pp ON pp."PatientID"=rel."PatientID"
+       JOIN users u ON u."UserID"=pp."UserID"
+       WHERE rel."DoctorID"=$1
+       ORDER BY rel."created_at" DESC`,
+      [doctorProfile.DoctorID]
+    );
+
+    return res.json({ pending: pending.rows, linked: linked.rows });
+  } catch (error) {
+    console.error("/api/doctor/match-requests GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load match requests" });
+  }
+});
+
+// Patient: list incoming pending match requests
+app.get("/api/patient/match-requests", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+
+    const incoming = await db.query(
+      `SELECT r."RequestID", r."status", r."message", r."created_at",
+              du."name" AS doctor_name, du."email" AS doctor_email,
+              hp."institution", hp."specialty"
+       FROM doctor_patient_match_requests r
+       JOIN doctor_profiles dp ON dp."DoctorID"=r."DoctorID"
+       JOIN users du ON du."UserID"=dp."UserID"
+       LEFT JOIN healthcare_providers hp ON hp."ProviderID"=dp."ProviderID"
+       WHERE r."PatientID"=$1 AND r."status"='pending'
+       ORDER BY r."created_at" DESC`,
+      [patientProfile.PatientID]
+    );
+
+    return res.json({ requests: incoming.rows });
+  } catch (error) {
+    console.error("/api/patient/match-requests GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load incoming requests" });
+  }
+});
+
+// Patient: respond to incoming request (accept/reject)
+app.post("/api/patient/match-requests/:requestId/respond", checkJwt, requireRole("patient"), async (req, res) => {
+  const requestId = Number(req.params.requestId);
+  const action = String(req.body?.action || "").toLowerCase();
+  if (!Number.isInteger(requestId) || requestId <= 0) {
+    return res.status(400).json({ error: "Invalid requestId" });
+  }
+  if (!["accept", "reject"].includes(action)) {
+    return res.status(400).json({ error: "action must be accept or reject" });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+    const reqRowRes = await client.query(
+      `SELECT "RequestID", "DoctorID", "PatientID", "status"
+       FROM doctor_patient_match_requests
+       WHERE "RequestID"=$1
+       FOR UPDATE`,
+      [requestId]
+    );
+
+    if (!reqRowRes.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Request not found" });
+    }
+
+    const reqRow = reqRowRes.rows[0];
+    if (reqRow.PatientID !== patientProfile.PatientID) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "Not allowed to respond to this request" });
+    }
+    if (reqRow.status !== "pending") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Request is already resolved" });
+    }
+
+    if (action === "accept") {
+      await client.query(
+        `INSERT INTO doctor_patient_relations ("DoctorID", "PatientID", "start_date", "status")
+         VALUES ($1,$2,CURRENT_DATE,'active')
+         ON CONFLICT ("DoctorID", "PatientID") DO UPDATE SET "status"='active'`,
+        [reqRow.DoctorID, reqRow.PatientID]
+      );
+    }
+
+    await client.query(
+      `UPDATE doctor_patient_match_requests
+       SET "status"=$1, "responded_at"=CURRENT_TIMESTAMP
+       WHERE "RequestID"=$2`,
+      [action === "accept" ? "accepted" : "rejected", requestId]
+    );
+
+    await client.query("COMMIT");
+    return res.json({ success: true, action });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("/api/patient/match-requests/:id/respond error:", error.message || error);
+    return res.status(500).json({ error: "Failed to respond to request" });
+  } finally {
+    client.release();
+  }
+});
+
+// Patient: list doctors already linked with this patient.
+app.get("/api/patient/linked-doctors", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+    const doctors = await db.query(
+      `SELECT dpr."RelationID", dpr."status", dpr."created_at",
+              dp."DoctorID", du."name" AS doctor_name, du."email" AS doctor_email,
+              COALESCE(NULLIF(TRIM(du."name"), ''), NULLIF(TRIM(hp.provider_name), ''), du."email") AS doctor_display_name,
+              hp.provider_name,
+              hp."institution", hp."specialty"
+       FROM doctor_patient_relations dpr
+       JOIN doctor_profiles dp ON dp."DoctorID"=dpr."DoctorID"
+       JOIN users du ON du."UserID"=dp."UserID"
+       LEFT JOIN healthcare_providers hp ON hp."ProviderID"=dp."ProviderID"
+       WHERE dpr."PatientID"=$1
+       ORDER BY dpr."created_at" DESC`,
+      [patientProfile.PatientID]
+    );
+
+    return res.json({ doctors: doctors.rows });
+  } catch (error) {
+    console.error("/api/patient/linked-doctors error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load linked doctors" });
+  }
+});
+
+// Patient: list appointment slots for a linked doctor (available + unavailable).
+app.get("/api/patient/doctors/:doctorId/slots", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const doctorId = Number(req.params.doctorId);
+    if (!Number.isInteger(doctorId) || doctorId <= 0) {
+      return res.status(400).json({ error: "Invalid doctorId" });
+    }
+
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+    const relation = await db.query(
+      `SELECT 1 FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 AND LOWER("status"::text)='active' LIMIT 1`,
+      [doctorId, patientProfile.PatientID]
+    );
+    if (!relation.rows.length) {
+      return res.status(403).json({ error: "Doctor is not linked to this patient" });
+    }
+
+    await ensureDefaultSlotsForDoctor(doctorId);
+
+    const slots = await db.query(
+      `SELECT
+          s."SlotID",
+          s."start_time",
+          s."end_time",
+          s."is_booked",
+          COALESCE(a."is_available", TRUE) AS "is_available"
+       FROM appointment_slots s
+       LEFT JOIN appointment_slot_availability a ON a."SlotID"=s."SlotID"
+       WHERE s."DoctorID"=$1
+         AND s."start_time">NOW()
+       ORDER BY s."start_time" ASC`,
+      [doctorId]
+    );
+    return res.json({ slots: slots.rows });
+  } catch (error) {
+    console.error("/api/patient/doctors/:doctorId/slots error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load doctor slots" });
+  }
+});
+
+// Patient: submit appointment request for a doctor slot.
+app.post("/api/patient/appointments", checkJwt, requireRole("patient"), async (req, res) => {
+  const doctorId = Number(req.body?.doctorId);
+  const slotId = Number(req.body?.slotId);
+  const reason = String(req.body?.reason || "").trim().slice(0, 1000);
+
+  if (!Number.isInteger(doctorId) || doctorId <= 0) {
+    return res.status(400).json({ error: "Invalid doctorId" });
+  }
+  if (!Number.isInteger(slotId) || slotId <= 0) {
+    return res.status(400).json({ error: "Invalid slotId" });
+  }
+  if (!reason) {
+    return res.status(400).json({ error: "reason is required" });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+
+    const relation = await client.query(
+      `SELECT 1 FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 AND LOWER("status"::text)='active' LIMIT 1`,
+      [doctorId, patientProfile.PatientID]
+    );
+    if (!relation.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "Doctor is not linked to this patient" });
+    }
+
+    const slotRes = await client.query(
+      `SELECT s."SlotID", s."DoctorID", s."is_booked", COALESCE(a."is_available", TRUE) AS "is_available", s."start_time"
+       FROM appointment_slots s
+       LEFT JOIN appointment_slot_availability a ON a."SlotID"=s."SlotID"
+       WHERE s."SlotID"=$1
+       FOR UPDATE`,
+      [slotId]
+    );
+    if (!slotRes.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Slot not found" });
+    }
+
+    const slot = slotRes.rows[0];
+    if (slot.DoctorID !== doctorId) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Slot does not belong to this doctor" });
+    }
+    if (slot.is_booked) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Slot already booked" });
+    }
+    if (!slot.is_available) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Slot is not available" });
+    }
+
+    const created = await client.query(
+      `INSERT INTO appointments ("DoctorID", "PatientID", "SlotID", "status", "reason")
+       VALUES ($1,$2,$3,'pending',$4)
+       RETURNING "AppointmentID", "status", "created_at"`,
+      [doctorId, patientProfile.PatientID, slotId, reason]
+    );
+
+    await client.query(`UPDATE appointment_slots SET "is_booked"=TRUE WHERE "SlotID"=$1`, [slotId]);
+
+    await client.query("COMMIT");
+    return res.json({ success: true, appointment: created.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("/api/patient/appointments POST error:", error.message || error);
+    return res.status(500).json({ error: "Failed to create appointment request" });
+  } finally {
+    client.release();
+  }
+});
+
+// Patient notifications: incoming doctor match requests + appointment updates.
+app.get("/api/patient/notifications", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+
+    const incomingMatches = await db.query(
+      `SELECT r."RequestID", r."status", r."message", r."created_at",
+              du."name" AS doctor_name, du."email" AS doctor_email
+       FROM doctor_patient_match_requests r
+       JOIN doctor_profiles dp ON dp."DoctorID"=r."DoctorID"
+       JOIN users du ON du."UserID"=dp."UserID"
+       WHERE r."PatientID"=$1 AND r."status"='pending'
+       ORDER BY r."created_at" DESC`,
+      [patientProfile.PatientID]
+    );
+
+    const appointments = await db.query(
+      `SELECT a."AppointmentID", a."status", a."reason", a."created_at",
+              s."start_time", s."end_time",
+              du."name" AS doctor_name, du."email" AS doctor_email
+       FROM appointments a
+       JOIN appointment_slots s ON s."SlotID"=a."SlotID"
+       JOIN doctor_profiles dp ON dp."DoctorID"=a."DoctorID"
+       JOIN users du ON du."UserID"=dp."UserID"
+       WHERE a."PatientID"=$1
+       ORDER BY a."created_at" DESC`,
+      [patientProfile.PatientID]
+    );
+
+    return res.json({ incomingMatches: incomingMatches.rows, appointments: appointments.rows });
+  } catch (error) {
+    console.error("/api/patient/notifications error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient notifications" });
+  }
+});
+
+// Doctor notifications: pending appointment requests + pending patient links.
+app.get("/api/doctor/notifications", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+
+    const appointmentRequests = await db.query(
+      `SELECT a."AppointmentID", a."status", a."reason", a."created_at",
+              s."SlotID", s."start_time", s."end_time",
+              pu."name" AS patient_name, pu."email" AS patient_email
+       FROM appointments a
+       JOIN appointment_slots s ON s."SlotID"=a."SlotID"
+       JOIN patient_profiles pp ON pp."PatientID"=a."PatientID"
+       JOIN users pu ON pu."UserID"=pp."UserID"
+       WHERE a."DoctorID"=$1 AND a."status"='pending'
+       ORDER BY a."created_at" DESC`,
+      [doctorProfile.DoctorID]
+    );
+
+    const matchRequests = await db.query(
+      `SELECT r."RequestID", r."status", r."message", r."created_at",
+              pu."name" AS patient_name, pu."email" AS patient_email
+       FROM doctor_patient_match_requests r
+       JOIN patient_profiles pp ON pp."PatientID"=r."PatientID"
+       JOIN users pu ON pu."UserID"=pp."UserID"
+       WHERE r."DoctorID"=$1 AND r."status"='pending'
+       ORDER BY r."created_at" DESC`,
+      [doctorProfile.DoctorID]
+    );
+
+    return res.json({ appointmentRequests: appointmentRequests.rows, pendingMatches: matchRequests.rows });
+  } catch (error) {
+    console.error("/api/doctor/notifications error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load doctor notifications" });
+  }
+});
+
+// Doctor: list appointments (confirmed/pending) for visibility in schedule UX.
+app.get("/api/doctor/appointments", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+    const appointments = await db.query(
+      `SELECT a."AppointmentID", a."status", a."reason", a."created_at",
+              s."SlotID", s."start_time", s."end_time",
+              pu."name" AS patient_name, pu."email" AS patient_email
+       FROM appointments a
+       JOIN appointment_slots s ON s."SlotID"=a."SlotID"
+       JOIN patient_profiles pp ON pp."PatientID"=a."PatientID"
+       JOIN users pu ON pu."UserID"=pp."UserID"
+       WHERE a."DoctorID"=$1 AND a."status" IN ('pending', 'confirmed')
+       ORDER BY s."start_time" ASC`,
+      [doctorProfile.DoctorID]
+    );
+
+    return res.json({ appointments: appointments.rows });
+  } catch (error) {
+    console.error("/api/doctor/appointments error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load doctor appointments" });
+  }
+});
+
+// Patient: list personal appointments (all states for timeline/history).
+app.get("/api/patient/appointments", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+    const appointments = await db.query(
+      `SELECT a."AppointmentID", a."status", a."reason", a."created_at",
+              s."SlotID", s."start_time", s."end_time",
+              du."name" AS doctor_name, du."email" AS doctor_email,
+              COALESCE(NULLIF(TRIM(du."name"), ''), NULLIF(TRIM(hp.provider_name), ''), du."email") AS doctor_display_name
+       FROM appointments a
+       JOIN appointment_slots s ON s."SlotID"=a."SlotID"
+       JOIN doctor_profiles dp ON dp."DoctorID"=a."DoctorID"
+       JOIN users du ON du."UserID"=dp."UserID"
+       LEFT JOIN healthcare_providers hp ON hp."ProviderID"=dp."ProviderID"
+       WHERE a."PatientID"=$1
+       ORDER BY s."start_time" ASC`,
+      [patientProfile.PatientID]
+    );
+
+    return res.json({ appointments: appointments.rows });
+  } catch (error) {
+    console.error("/api/patient/appointments GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient appointments" });
+  }
+});
+
+// Doctor: load one editable day of slots (tomorrow + 7 day window).
+app.get("/api/doctor/appointment-slots", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const dateStr = normalizeDateOnlyString(req.query.date);
+    const editableWindow = buildEditableDateWindow();
+    if (!dateStr || !editableWindow.includes(dateStr)) {
+      return res.status(400).json({ error: "date must be within tomorrow and the next 7 days" });
+    }
+
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+    await ensureDefaultSlotsForDoctor(doctorProfile.DoctorID);
+
+    const slots = await db.query(
+      `SELECT s."SlotID", s."start_time", s."end_time", COALESCE(sa."is_available", TRUE) AS "is_available", s."is_booked",
+              a."AppointmentID", a."status" AS appointment_status, a."reason",
+              pu."name" AS patient_name, pu."email" AS patient_email
+       FROM appointment_slots s
+       LEFT JOIN appointment_slot_availability sa ON sa."SlotID"=s."SlotID"
+       LEFT JOIN LATERAL (
+         SELECT ap."AppointmentID", ap."status", ap."reason", ap."PatientID"
+         FROM appointments ap
+         WHERE ap."SlotID"=s."SlotID" AND ap."status" IN ('pending', 'confirmed')
+         ORDER BY ap."created_at" DESC
+         LIMIT 1
+       ) a ON TRUE
+       LEFT JOIN patient_profiles pp ON pp."PatientID"=a."PatientID"
+       LEFT JOIN users pu ON pu."UserID"=pp."UserID"
+       WHERE s."DoctorID"=$1 AND DATE(s."start_time")=$2::date
+       ORDER BY s."start_time" ASC`,
+      [doctorProfile.DoctorID, dateStr]
+    );
+
+    return res.json({ date: dateStr, editableWindow, slots: slots.rows });
+  } catch (error) {
+    console.error("/api/doctor/appointment-slots GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load appointment slots" });
+  }
+});
+
+// Doctor: save one day slot availability. Pending/confirmed slots are immutable here.
+app.post("/api/doctor/appointment-slots/save-day", checkJwt, requireRole("doctor"), async (req, res) => {
+  const dateStr = normalizeDateOnlyString(req.body?.date);
+  const updates = Array.isArray(req.body?.slots) ? req.body.slots : [];
+  const editableWindow = buildEditableDateWindow();
+
+  if (!dateStr || !editableWindow.includes(dateStr)) {
+    return res.status(400).json({ error: "date must be within tomorrow and the next 7 days" });
+  }
+  if (!updates.length) {
+    return res.status(400).json({ error: "slots update payload is required" });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+    await ensureDefaultSlotsForDoctor(doctorProfile.DoctorID);
+
+    const lockedSlotIds = [];
+    let savedCount = 0;
+
+    for (const item of updates) {
+      const slotId = Number(item?.slotId);
+      const isAvailable = Boolean(item?.isAvailable);
+      if (!Number.isInteger(slotId) || slotId <= 0) continue;
+
+      const slotRes = await client.query(
+        `SELECT "SlotID"
+         FROM appointment_slots
+         WHERE "SlotID"=$1 AND "DoctorID"=$2 AND DATE("start_time")=$3::date
+         FOR UPDATE`,
+        [slotId, doctorProfile.DoctorID, dateStr]
+      );
+      if (!slotRes.rows.length) continue;
+
+      const activeAppt = await client.query(
+        `SELECT 1 FROM appointments WHERE "SlotID"=$1 AND "status" IN ('pending', 'confirmed') LIMIT 1`,
+        [slotId]
+      );
+      if (activeAppt.rows.length) {
+        lockedSlotIds.push(slotId);
+        continue;
+      }
+
+      await client.query(
+        `INSERT INTO appointment_slot_availability ("SlotID", "is_available", "updated_at")
+         VALUES ($1,$2,CURRENT_TIMESTAMP)
+         ON CONFLICT ("SlotID") DO UPDATE SET
+           "is_available"=EXCLUDED."is_available",
+           "updated_at"=CURRENT_TIMESTAMP`,
+        [slotId, isAvailable]
+      );
+      savedCount += 1;
+    }
+
+    await client.query("COMMIT");
+    return res.json({ success: true, savedCount, lockedSlotIds });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("/api/doctor/appointment-slots/save-day error:", error.message || error);
+    return res.status(500).json({ error: "Failed to save slot availability" });
+  } finally {
+    client.release();
+  }
+});
+
+// Doctor: confirm/reject a pending appointment request.
+app.post("/api/doctor/appointments/:appointmentId/respond", checkJwt, requireRole("doctor"), async (req, res) => {
+  const appointmentId = Number(req.params.appointmentId);
+  const action = String(req.body?.action || "").toLowerCase();
+  if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+    return res.status(400).json({ error: "Invalid appointmentId" });
+  }
+  if (!["confirm", "reject"].includes(action)) {
+    return res.status(400).json({ error: "action must be confirm or reject" });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+
+    const apptRes = await client.query(
+      `SELECT "AppointmentID", "DoctorID", "SlotID", "status"
+       FROM appointments
+       WHERE "AppointmentID"=$1
+       FOR UPDATE`,
+      [appointmentId]
+    );
+    if (!apptRes.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Appointment not found" });
+    }
+
+    const appt = apptRes.rows[0];
+    if (appt.DoctorID !== doctorProfile.DoctorID) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "Not allowed to respond to this appointment" });
+    }
+    if (String(appt.status).toLowerCase() !== "pending") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Appointment already resolved" });
+    }
+
+    const nextStatus = action === "confirm" ? "confirmed" : "cancelled";
+    await client.query(`UPDATE appointments SET "status"=$1 WHERE "AppointmentID"=$2`, [nextStatus, appointmentId]);
+
+    if (action === "reject") {
+      await client.query(`UPDATE appointment_slots SET "is_booked"=FALSE WHERE "SlotID"=$1`, [appt.SlotID]);
+    }
+
+    await client.query("COMMIT");
+    return res.json({ success: true, status: nextStatus });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("/api/doctor/appointments/:id/respond error:", error.message || error);
+    return res.status(500).json({ error: "Failed to respond to appointment" });
+  } finally {
+    client.release();
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+initDbArtifacts()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error("Failed to initialize database artifacts:", error.message || error);
+    process.exit(1);
+  });

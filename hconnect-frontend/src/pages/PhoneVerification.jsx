@@ -88,18 +88,18 @@ export default function PhoneVerification({ onVerified }) {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
-      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_20%_10%,#2f2758_0%,#1b1640_45%,#100c24_100%)] flex items-center justify-center p-4 text-slate-100">
+      <div className="bg-[#171133]/92 rounded-2xl border border-violet-300/28 shadow-xl p-8 w-full max-w-md">
         {step === 1 ? (
           <>
-            <h1 className="text-2xl font-bold text-center text-gray-900 mb-4">Phone verification</h1>
+            <h1 className="text-2xl font-bold text-center text-slate-100 mb-4">Phone verification</h1>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm text-gray-700 mb-1">Country</label>
+                <label className="block text-sm text-slate-300 mb-1">Country</label>
                 <select
                   value={countryCode}
                   onChange={(e) => setCountryCode(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg bg-white text-sm"
+                  className="w-full px-3 py-2 border border-slate-500/40 rounded-lg bg-slate-900/60 text-sm text-slate-100"
                 >
                   {countryOptions.map((opt) => (
                     <option key={opt.code} value={opt.code}>
@@ -109,41 +109,41 @@ export default function PhoneVerification({ onVerified }) {
                 </select>
               </div>
               <div>
-                <label className="block text-sm text-gray-700 mb-1">Phone number</label>
+                <label className="block text-sm text-slate-300 mb-1">Phone number</label>
                 <input
                   type="tel"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
                   placeholder="4168215694"
-                  className="w-full px-3 py-2 border rounded-lg"
+                  className="w-full px-3 py-2 border border-slate-500/40 rounded-lg bg-slate-900/60 text-slate-100"
                 />
               </div>
             </div>
-            {error && <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>}
+            {error && <div className="mt-4 p-3 bg-rose-500/15 border border-rose-300/40 text-rose-200 rounded-lg text-sm">{error}</div>}
             <button
               onClick={handleContinue}
               disabled={loading}
-              className="w-full mt-6 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
+              className="w-full mt-6 bg-violet-500/90 text-white py-3 rounded-lg font-semibold hover:bg-violet-400 disabled:opacity-50"
             >
               {loading ? "Sending…" : "Send code"}
             </button>
           </>
         ) : (
           <>
-            <h1 className="text-2xl font-bold text-center text-gray-900 mb-4">Enter verification code</h1>
-            <p className="text-center text-gray-600 mb-4">Code sent to {fullPhone}</p>
+            <h1 className="text-2xl font-bold text-center text-slate-100 mb-4">Enter verification code</h1>
+            <p className="text-center text-slate-300 mb-4">Code sent to {fullPhone}</p>
             <input
               type="text"
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
               placeholder="123456"
-              className="w-full px-3 py-2 border rounded-lg"
+              className="w-full px-3 py-2 border border-slate-500/40 rounded-lg bg-slate-900/60 text-slate-100"
             />
-            {error && <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>}
+            {error && <div className="mt-4 p-3 bg-rose-500/15 border border-rose-300/40 text-rose-200 rounded-lg text-sm">{error}</div>}
             <button
               onClick={handleVerifyCode}
               disabled={loading}
-              className="w-full mt-6 bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 disabled:opacity-50"
+              className="w-full mt-6 bg-emerald-600 text-white py-3 rounded-lg font-semibold hover:bg-emerald-500 disabled:opacity-50"
             >
               {loading ? "Verifying…" : "Verify"}
             </button>

@@ -2,6 +2,11 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
 import Card from "../components/Card.jsx";
 import { accountProfileDefaults, securityDefaults } from "../data/account_settings.js";
+import { apiUrl } from "../lib/api.js";
+
+const APP_ORIGIN =
+  import.meta.env.VITE_APP_ORIGIN ||
+  (import.meta.env.DEV ? "http://localhost:5173" : window.location.origin);
 
 function SectionTitle({ title, subtitle }) {
   return (
@@ -12,7 +17,7 @@ function SectionTitle({ title, subtitle }) {
   );
 }
 
-function Toggle({ checked, onChange, label, hint }) {
+function Toggle({ checked, onChange, label, hint, disabled = false }) {
   return (
     <div className="flex items-start justify-between gap-4 rounded-2xl bg-slate-50 ring-1 ring-black/5 p-4">
       <div>
@@ -21,10 +26,15 @@ function Toggle({ checked, onChange, label, hint }) {
       </div>
       <button
         type="button"
-        onClick={() => onChange(!checked)}
+        onClick={() => {
+          if (disabled) return;
+          onChange(!checked);
+        }}
+        disabled={disabled}
         className={[
           "relative inline-flex h-7 w-12 items-center rounded-full transition",
           checked ? "bg-slate-900" : "bg-slate-300",
+          disabled ? "opacity-60 cursor-not-allowed" : "",
         ].join(" ")}
         aria-pressed={checked}
       >
@@ -40,7 +50,7 @@ function Toggle({ checked, onChange, label, hint }) {
 }
 
 export default function AccountSettings() {
-  const { user, logout } = useAuth0();
+  const { user, logout, getAccessTokenSilently } = useAuth0();
   const [profile, setProfile] = useState(accountProfileDefaults);
   const [security, setSecurity] = useState(securityDefaults);
   const [preferences, setPreferences] = useState({
@@ -59,6 +69,8 @@ export default function AccountSettings() {
   });
   const [statusMsg, setStatusMsg] = useState("");
   const [statusType, setStatusType] = useState("success");
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
 
   const storageKey = useMemo(() => `account_settings_${user?.sub || "guest"}`, [user?.sub]);
 
@@ -67,6 +79,7 @@ export default function AccountSettings() {
       ...accountProfileDefaults,
       fullName: user?.name || accountProfileDefaults.fullName,
       email: user?.email || accountProfileDefaults.email,
+      phone: user?.phone_number || accountProfileDefaults.phone,
     };
 
     const raw = localStorage.getItem(storageKey);
@@ -127,15 +140,6 @@ export default function AccountSettings() {
       errors.fullName = "Full name must be at least 2 characters.";
     }
 
-    if (!profile.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.email.trim())) {
-      errors.email = "Please enter a valid email address.";
-    }
-
-    const phoneDigits = (profile.phone || "").replace(/\D/g, "");
-    if (!phoneDigits || phoneDigits.length < 8 || phoneDigits.length > 15) {
-      errors.phone = "Phone must contain 8-15 digits.";
-    }
-
     return errors;
   }, [profile]);
 
@@ -144,8 +148,42 @@ export default function AccountSettings() {
   }, [profile, security, preferences, savedSnapshot]);
 
   const canSave = useMemo(() => {
-    return Object.keys(validation).length === 0 && isDirty;
+    return isEditing && Object.keys(validation).length === 0 && isDirty;
   }, [validation, isDirty]);
+
+  useEffect(() => {
+    if (!(isEditing && isDirty)) return;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    const handleAnchorNavigation = (event) => {
+      const anchor = event.target?.closest?.("a[href]");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href");
+      if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
+
+      const targetUrl = new URL(anchor.href, window.location.origin);
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const next = `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`;
+      if (current === next) return;
+
+      const ok = window.confirm("You have unsaved changes. Discard and leave this page?");
+      if (!ok) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("click", handleAnchorNavigation, true);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("click", handleAnchorNavigation, true);
+    };
+  }, [isEditing, isDirty]);
 
   function saveProfile(e) {
     e.preventDefault();
@@ -153,9 +191,15 @@ export default function AccountSettings() {
     const snapshot = { profile, security, preferences };
     localStorage.setItem(storageKey, JSON.stringify(snapshot));
     setSavedSnapshot(snapshot);
+    setIsEditing(false);
     setStatusType("success");
     setStatusMsg("Account settings saved successfully.");
     setTimeout(() => setStatusMsg(""), 2500);
+  }
+
+  function startEditing() {
+    setStatusMsg("");
+    setIsEditing(true);
   }
 
   function changePassword() {
@@ -165,46 +209,59 @@ export default function AccountSettings() {
   }
 
   function logoutEverywhere() {
-    logout({ logoutParams: { returnTo: window.location.origin } });
+    logout({ logoutParams: { returnTo: APP_ORIGIN } });
   }
 
   function resetToLastSaved() {
+    if (isDirty) {
+      const ok = window.confirm("Discard your unsaved changes?");
+      if (!ok) return;
+    }
     setProfile(savedSnapshot.profile);
     setSecurity(savedSnapshot.security);
     setPreferences(savedSnapshot.preferences);
+    setIsEditing(false);
     setStatusType("info");
     setStatusMsg("Changes reverted to last saved state.");
     setTimeout(() => setStatusMsg(""), 1800);
   }
 
+  async function deleteAccountData() {
+    const ok = window.confirm("This will permanently delete your account data and sign you out. Continue?");
+    if (!ok) return;
+
+    setDeleteLoading(true);
+    try {
+      const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+      const res = await fetch(apiUrl("/api/account"), {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error || payload.message || "Failed to delete account data");
+      }
+
+      localStorage.removeItem(storageKey);
+      localStorage.removeItem(`user_role_${user?.sub}`);
+
+      logout({ logoutParams: { returnTo: APP_ORIGIN } });
+    } catch (error) {
+      setStatusType("error");
+      setStatusMsg(error.message || "Failed to delete account data.");
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
   return (
     <div className="p-6 space-y-6">
-      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div>
-          <div className="text-sm font-semibold text-slate-900">Account Settings</div>
-          <div className="text-xs text-slate-500 mt-1">Profile + security UI skeleton (ready to wire up).</div>
-        </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={resetToLastSaved}
-            className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
-            disabled={!isDirty}
-          >
-            Reset
-          </button>
-          <button
-            type="button"
-            onClick={saveProfile}
-            disabled={!canSave}
-            className={[
-              "rounded-2xl px-4 py-2 text-sm",
-              canSave ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-500 cursor-not-allowed",
-            ].join(" ")}
-          >
-            Save
-          </button>
-        </div>
+      <div>
+        <div className="text-sm font-semibold text-slate-900">Account Settings</div>
+        <div className="text-xs text-slate-500 mt-1">Manage profile, security, and preferences.</div>
       </div>
 
       {statusMsg ? (
@@ -225,7 +282,24 @@ export default function AccountSettings() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
           <Card title="Profile">
-            <SectionTitle title="Basic information" subtitle="These settings are stored per user on this device." />
+            <SectionTitle title="Account identity" />
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+              <div className="rounded-2xl bg-[#16112d] ring-1 ring-violet-300/20 px-3 py-2">
+                <div className="text-xs text-slate-500 mb-1">Role</div>
+                <div className="text-sm text-slate-900">{profile.role || "doctor"}</div>
+              </div>
+              <div className="rounded-2xl bg-[#16112d] ring-1 ring-violet-300/20 px-3 py-2 md:col-span-2">
+                <div className="text-xs text-slate-500 mb-1">Email</div>
+                <div className="text-sm text-slate-900 break-all">{profile.email || "Not available"}</div>
+              </div>
+              <div className="rounded-2xl bg-[#16112d] ring-1 ring-violet-300/20 px-3 py-2 md:col-span-3">
+                <div className="text-xs text-slate-500 mb-1">Phone</div>
+                <div className="text-sm text-slate-900">{profile.phone || "Not provided"}</div>
+              </div>
+            </div>
+
+            
 
             <form onSubmit={saveProfile} className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <label>
@@ -233,38 +307,10 @@ export default function AccountSettings() {
                 <input
                   className="w-full rounded-2xl bg-white ring-1 ring-black/5 px-3 py-2 text-sm outline-none focus:ring-black/10"
                   value={profile.fullName}
+                  disabled={!isEditing}
                   onChange={(e) => setProfile({ ...profile, fullName: e.target.value })}
                 />
                 {validation.fullName ? <div className="mt-1 text-xs text-rose-600">{validation.fullName}</div> : null}
-              </label>
-
-              <label>
-                <div className="text-xs text-slate-500 mb-1">Role</div>
-                <input
-                  className="w-full rounded-2xl bg-white ring-1 ring-black/5 px-3 py-2 text-sm outline-none"
-                  value={profile.role}
-                  onChange={(e) => setProfile({ ...profile, role: e.target.value })}
-                />
-              </label>
-
-              <label className="md:col-span-2">
-                <div className="text-xs text-slate-500 mb-1">Email</div>
-                <input
-                  className="w-full rounded-2xl bg-white ring-1 ring-black/5 px-3 py-2 text-sm outline-none"
-                  value={profile.email}
-                  onChange={(e) => setProfile({ ...profile, email: e.target.value })}
-                />
-                {validation.email ? <div className="mt-1 text-xs text-rose-600">{validation.email}</div> : null}
-              </label>
-
-              <label>
-                <div className="text-xs text-slate-500 mb-1">Phone</div>
-                <input
-                  className="w-full rounded-2xl bg-white ring-1 ring-black/5 px-3 py-2 text-sm outline-none"
-                  value={profile.phone}
-                  onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
-                />
-                {validation.phone ? <div className="mt-1 text-xs text-rose-600">{validation.phone}</div> : null}
               </label>
 
               <label>
@@ -272,6 +318,7 @@ export default function AccountSettings() {
                 <input
                   className="w-full rounded-2xl bg-white ring-1 ring-black/5 px-3 py-2 text-sm outline-none"
                   value={profile.clinic}
+                  disabled={!isEditing}
                   onChange={(e) => setProfile({ ...profile, clinic: e.target.value })}
                 />
               </label>
@@ -284,25 +331,45 @@ export default function AccountSettings() {
                 <button
                   type="button"
                   onClick={() => alert("Upload photo (demo). Next step: file picker + storage.")}
+                  disabled={!isEditing}
                   className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
                 >
                   Upload
                 </button>
               </div>
-
-              <div className="md:col-span-2">
-                <button
-                  type="submit"
-                  className={[
-                    "w-full rounded-2xl px-4 py-2 text-sm",
-                    canSave ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-500 cursor-not-allowed",
-                  ].join(" ")}
-                  disabled={!canSave}
-                >
-                  Save profile
-                </button>
-              </div>
             </form>
+            <div className="flex gap-2 mb-3">
+              {!isEditing ? (
+                <button
+                  type="button"
+                  onClick={startEditing}
+                  className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
+                >
+                  Edit
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={resetToLastSaved}
+                    className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveProfile}
+                    disabled={!canSave}
+                    className={[
+                      "rounded-2xl px-4 py-2 text-sm",
+                      canSave ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-500 cursor-not-allowed",
+                    ].join(" ")}
+                  >
+                    Save
+                  </button>
+                </>
+              )}
+            </div>
           </Card>
 
           <Card title="Security">
@@ -326,6 +393,7 @@ export default function AccountSettings() {
               <Toggle
                 checked={security.twoFactorEnabled}
                 onChange={(v) => setSecurity({ ...security, twoFactorEnabled: v })}
+                disabled={!isEditing}
                 label="Two-factor authentication (2FA)"
                 hint="Placeholder: enable/disable 2FA."
               />
@@ -334,6 +402,7 @@ export default function AccountSettings() {
                 <button
                   type="button"
                   onClick={changePassword}
+                  disabled={!isEditing}
                   className="flex-1 rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
                 >
                   Change password
@@ -356,18 +425,21 @@ export default function AccountSettings() {
               <Toggle
                 checked={preferences.emailUpdates}
                 onChange={(v) => setPreferences((prev) => ({ ...prev, emailUpdates: v }))}
+                disabled={!isEditing}
                 label="Email updates"
                 hint="Receive account and activity updates by email."
               />
               <Toggle
                 checked={preferences.smsUpdates}
                 onChange={(v) => setPreferences((prev) => ({ ...prev, smsUpdates: v }))}
+                disabled={!isEditing}
                 label="SMS updates"
                 hint="Receive urgent alerts via SMS."
               />
               <Toggle
                 checked={preferences.inAppNotifications}
                 onChange={(v) => setPreferences((prev) => ({ ...prev, inAppNotifications: v }))}
+                disabled={!isEditing}
                 label="In-app notifications"
                 hint="Show notifications in the app feed."
               />
@@ -375,9 +447,7 @@ export default function AccountSettings() {
           </Card>
 
           <Card title="Danger zone">
-            <div className="text-sm text-slate-700">
-              Placeholder actions for account deactivation / data export. Keep behind confirmations.
-            </div>
+            <div className="text-sm text-slate-700">Sensitive actions. Use with caution.</div>
 
             <div className="mt-3 flex flex-col gap-2">
               <button
@@ -403,16 +473,11 @@ export default function AccountSettings() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  const ok = window.confirm("Are you sure you want to deactivate this account? This is currently a local demo action.");
-                  if (!ok) return;
-                  localStorage.removeItem(storageKey);
-                  setStatusType("info");
-                  setStatusMsg("Account settings were cleared for this user on this device.");
-                }}
-                className="rounded-2xl bg-rose-600 text-white px-4 py-2 text-sm hover:bg-rose-500"
+                onClick={deleteAccountData}
+                disabled={deleteLoading}
+                className="rounded-2xl bg-rose-600 text-white px-4 py-2 text-sm hover:bg-rose-500 disabled:opacity-50"
               >
-                Deactivate account
+                {deleteLoading ? "Deleting account..." : "Delete account data and sign out"}
               </button>
             </div>
           </Card>

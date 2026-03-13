@@ -4,17 +4,11 @@ import { useNavigate } from "react-router-dom";
 import { apiUrl } from "../lib/api.js";
 
 export default function RoleSelection() {
-  const { user, getAccessTokenSilently, loginWithRedirect, isAuthenticated } = useAuth0();
+  const { user, getAccessTokenSilently, isAuthenticated } = useAuth0();
   const navigate = useNavigate();
   const [role, setRole] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const enterDemoDashboard = () => {
-    localStorage.setItem("hconnect_demo_mode", "true");
-    localStorage.setItem("hconnect_demo_role", "doctor");
-    window.location.href = "/";
-  };
 
   const handleContinue = async () => {
     setError("");
@@ -25,7 +19,7 @@ export default function RoleSelection() {
       if (role === "doctor") {
         navigate("/doctor/entry");
       } else {
-        loginWithRedirect();
+        navigate("/patient/entry");
       }
       return;
     }
@@ -66,46 +60,39 @@ export default function RoleSelection() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
-      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
-        <h1 className="text-2xl font-bold text-center text-gray-900 mb-2">Welcome{user?.name ? `, ${user.name}` : ""}</h1>
-        <p className="text-center text-gray-600 mb-6">Please select your role to continue</p>
+    <div className="min-h-screen bg-[linear-gradient(135deg,#110f24_0%,#161f3c_45%,#0d1a33_100%)] flex items-center justify-center p-4">
+      <div className="rounded-2xl border border-slate-400/25 bg-[#0f1730]/92 shadow-2xl p-8 w-full max-w-md backdrop-blur text-slate-100">
+        <h1 className="text-2xl font-bold text-center text-slate-100 mb-2">Welcome{user?.name ? `, ${user.name}` : ""}</h1>
+        <p className="text-center text-slate-300 mb-6">Select which portal you want to continue with.</p>
 
         <div className="space-y-4">
           <button
             onClick={() => setRole("doctor")}
-            className={`w-full p-5 rounded-xl border-2 text-left transition ${role === "doctor" ? "border-blue-600 bg-blue-50" : "border-gray-200 hover:border-blue-300"}`}
+            className={`w-full p-5 rounded-xl border text-left transition ${role === "doctor" ? "border-blue-300/60 bg-blue-400/10" : "border-slate-500/30 hover:border-blue-300/50"}`}
           >
             <div className="text-xl mb-1">👨‍⚕️ Doctor</div>
-            <div className="text-sm text-gray-600">Healthcare professional</div>
+            <div className="text-sm text-slate-300">Dark blue clinical workspace</div>
           </button>
 
           <button
             onClick={() => setRole("patient")}
-            className={`w-full p-5 rounded-xl border-2 text-left transition ${role === "patient" ? "border-blue-600 bg-blue-50" : "border-gray-200 hover:border-blue-300"}`}
+            className={`w-full p-5 rounded-xl border text-left transition ${role === "patient" ? "border-violet-300/60 bg-violet-400/10" : "border-slate-500/30 hover:border-violet-300/50"}`}
           >
             <div className="text-xl mb-1">🧑‍🤝‍🧑 Patient</div>
-            <div className="text-sm text-gray-600">Receiving care</div>
+            <div className="text-sm text-slate-300">Dark purple personal care portal</div>
           </button>
         </div>
 
-        {error && <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>}
+        {error && <div className="mt-4 p-3 bg-rose-500/15 border border-rose-300/40 text-rose-200 rounded-lg text-sm">{error}</div>}
 
         <button
           onClick={handleContinue}
           disabled={loading}
-          className="w-full mt-6 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
+          className="w-full mt-6 bg-slate-200/10 text-white py-3 rounded-lg font-semibold hover:bg-slate-200/20 border border-slate-500/40 disabled:opacity-50"
         >
           {loading ? "Processing..." : "Continue"}
         </button>
 
-        <button
-          type="button"
-          onClick={enterDemoDashboard}
-          className="w-full mt-3 bg-slate-100 text-slate-800 py-3 rounded-lg font-semibold hover:bg-slate-200"
-        >
-          Enter Demo Dashboard
-        </button>
       </div>
     </div>
   );
