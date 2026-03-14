@@ -7,13 +7,13 @@ import Topbar from "./components/Topbar.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Patients from "./pages/Patients.jsx";
 import AddPatient from "./pages/AddPatient.jsx";
+import DoctorAppointments from "./pages/DoctorAppointments.jsx";
 import Notifications from "./pages/Notifications.jsx";
 import Placeholder from "./pages/Placeholder.jsx";
 import ReportsOverview from "./pages/ReportsOverview.jsx";
 import ReportsDetailed from "./pages/ReportsDetailed.jsx";
 import AccountSettings from "./pages/AccountSettings.jsx";
 import NotificationSettings from "./pages/NotificationSettings.jsx";
-import ProfileCustomization from "./pages/ProfileCustomization.jsx";
 import Help from "./pages/Help.jsx";
 import PatientEntry from "./pages/PatientEntry.jsx";
 import PatientRegister from "./pages/PatientRegister.jsx";
@@ -38,6 +38,7 @@ const APP_ORIGIN =
 
 function titleFromPath(pathname) {
   if (pathname === "/") return "Dashboard";
+  if (pathname.startsWith("/appointments")) return "Appointments";
   if (pathname.startsWith("/patients/new")) return "Add New Patient";
   if (pathname.startsWith("/patients")) return "Patient List";
   if (pathname.startsWith("/notifications")) return "Notifications";
@@ -45,7 +46,6 @@ function titleFromPath(pathname) {
   if (pathname.startsWith("/reports/detail")) return "Reports — Detailed report";
   if (pathname.startsWith("/settings/account")) return "Account Settings";
   if (pathname.startsWith("/settings/notifications")) return "Notification Settings";
-  if (pathname.startsWith("/settings/profile")) return "Profile customization";
   if (pathname.startsWith("/help")) return "Help";
   return "Dashboard";
 }
@@ -87,6 +87,7 @@ function DashboardLayout({ user, logout, getAccessTokenSilently }) {
           <Route path="/" element={<Dashboard />} />
           <Route path="/patients" element={<Patients search={search} />} />
           <Route path="/patients/new" element={<AddPatient />} />
+          <Route path="/appointments" element={<DoctorAppointments />} />
           <Route path="/notifications" element={<Notifications />} />
 
           {/* ✅ Completed page (no longer placeholder) */}
@@ -95,7 +96,6 @@ function DashboardLayout({ user, logout, getAccessTokenSilently }) {
 
           <Route path="/settings/account" element={<AccountSettings />} />
           <Route path="/settings/notifications" element={<NotificationSettings />} />
-          <Route path="/settings/profile" element={<ProfileCustomization />} />
 
           <Route path="/help" element={<Help />} />
           <Route path="*" element={<Navigate to="/" replace />} />

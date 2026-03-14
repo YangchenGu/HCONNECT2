@@ -12,19 +12,22 @@ const NAV = [
     ],
   },
   {
+    section: "Appointments",
+    items: [{ to: "/appointments", label: "Appointment", icon: "📅" }],
+  },
+  {
     section: "Report & Analysis",
     items: [
       { to: "/reports/overview", label: "Overview", icon: "🧾" },
       { to: "/reports/detail", label: "Detailed report", icon: "📈" },
     ],
   },
-  { section: "Notifications", items: [{ to: "/notifications", label: "Alerts", icon: "🔔" }] },
+  { section: "Notifications", items: [{ to: "/notifications", label: "Notifications", icon: "🔔" }] },
   {
     section: "Settings",
     items: [
       { to: "/settings/account", label: "Account Settings", icon: "⚙️" },
       { to: "/settings/notifications", label: "Notification Settings", icon: "🛎️" },
-      { to: "/settings/profile", label: "Profile customization", icon: "👤" },
     ],
   },
   { section: "Help", items: [{ to: "/help", label: "Help", icon: "❓" }] },

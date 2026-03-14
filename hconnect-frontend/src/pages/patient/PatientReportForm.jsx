@@ -1,25 +1,67 @@
 import React, { useState } from "react";
+import { useAuth0 } from "@auth0/auth0-react";
+import { apiUrl } from "../../lib/api.js";
 
 const initial = {
-  painLevel: "",
+  bloodPressureSystolic: "",
+  bloodPressureDiastolic: "",
+  weightKg: "",
   sleepHours: "",
-  energy: "",
+  sleepQuality: "",
+  painLevel: "",
   notes: "",
 };
 
 export default function PatientReportForm() {
+  const { getAccessTokenSilently } = useAuth0();
   const [form, setForm] = useState(initial);
+  const [submitting, setSubmitting] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [message, setMessage] = useState("");
+  const [messageType, setMessageType] = useState("success");
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
+    setMessage("");
   }
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
-    localStorage.setItem("patient_daily_report", JSON.stringify({ ...form, submittedAt: new Date().toISOString() }));
-    setSaved(true);
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+      const res = await fetch(apiUrl("/api/patient/reports"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          bloodPressureSystolic: form.bloodPressureSystolic,
+          bloodPressureDiastolic: form.bloodPressureDiastolic,
+          weightKg: form.weightKg,
+          sleepHours: form.sleepHours,
+          sleepQuality: form.sleepQuality,
+          painLevel: form.painLevel,
+          note: form.notes,
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || "Failed to submit report");
+
+      setSaved(true);
+      setMessageType("success");
+      setMessage("Report submitted successfully.");
+      setForm(initial);
+    } catch (error) {
+      setSaved(false);
+      setMessageType("error");
+      setMessage(error.message || "Failed to submit report");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -30,13 +72,40 @@ export default function PatientReportForm() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <label className="block">
-            <div className="text-xs text-violet-300 mb-1">Pain level (0-10)</div>
+            <div className="text-xs text-violet-300 mb-1">Blood pressure systolic (mmHg)</div>
             <input
               type="number"
-              min="0"
-              max="10"
-              value={form.painLevel}
-              onChange={(e) => updateField("painLevel", e.target.value)}
+              min="70"
+              max="250"
+              value={form.bloodPressureSystolic}
+              onChange={(e) => updateField("bloodPressureSystolic", e.target.value)}
+              className="w-full rounded-lg border border-violet-300/20 bg-[#1a1335] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
+              required
+            />
+          </label>
+
+          <label className="block">
+            <div className="text-xs text-violet-300 mb-1">Blood pressure diastolic (mmHg)</div>
+            <input
+              type="number"
+              min="40"
+              max="150"
+              value={form.bloodPressureDiastolic}
+              onChange={(e) => updateField("bloodPressureDiastolic", e.target.value)}
+              className="w-full rounded-lg border border-violet-300/20 bg-[#1a1335] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
+              required
+            />
+          </label>
+
+          <label className="block">
+            <div className="text-xs text-violet-300 mb-1">Weight (kg)</div>
+            <input
+              type="number"
+              min="20"
+              max="400"
+              step="0.1"
+              value={form.weightKg}
+              onChange={(e) => updateField("weightKg", e.target.value)}
               className="w-full rounded-lg border border-violet-300/20 bg-[#1a1335] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
               required
             />
@@ -56,19 +125,30 @@ export default function PatientReportForm() {
             />
           </label>
 
-          <label className="block md:col-span-2">
-            <div className="text-xs text-violet-300 mb-1">Energy level</div>
-            <select
-              value={form.energy}
-              onChange={(e) => updateField("energy", e.target.value)}
+          <label className="block">
+            <div className="text-xs text-violet-300 mb-1">Sleep quality (0-10)</div>
+            <input
+              type="number"
+              min="0"
+              max="10"
+              value={form.sleepQuality}
+              onChange={(e) => updateField("sleepQuality", e.target.value)}
               className="w-full rounded-lg border border-violet-300/20 bg-[#1a1335] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
               required
-            >
-              <option value="">Select level</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
+            />
+          </label>
+
+          <label className="block">
+            <div className="text-xs text-violet-300 mb-1">Pain level (0-10)</div>
+            <input
+              type="number"
+              min="0"
+              max="10"
+              value={form.painLevel}
+              onChange={(e) => updateField("painLevel", e.target.value)}
+              className="w-full rounded-lg border border-violet-300/20 bg-[#1a1335] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
+              required
+            />
           </label>
 
           <label className="block md:col-span-2">
@@ -83,11 +163,16 @@ export default function PatientReportForm() {
           </label>
         </div>
 
-        <button type="submit" className="rounded-xl bg-violet-500 hover:bg-violet-400 text-white px-5 py-2.5 text-sm font-semibold transition">
-          Submit report
+        <button
+          type="submit"
+          disabled={submitting}
+          className="rounded-xl bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-white px-5 py-2.5 text-sm font-semibold transition"
+        >
+          {submitting ? "Submitting..." : "Submit report"}
         </button>
 
         {saved ? <div className="text-sm text-emerald-300">Report saved successfully.</div> : null}
+        {message ? <div className={`text-sm ${messageType === "error" ? "text-rose-300" : "text-emerald-300"}`}>{message}</div> : null}
       </form>
     </div>
   );

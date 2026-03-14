@@ -18,7 +18,7 @@ function buildNextSevenDays(todayKey) {
   const start = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1);
   const days = [];
 
-  for (let i = 0; i < 7; i += 1) {
+  for (let i = 0; i < 8; i += 1) {
     const value = new Date(start);
     value.setDate(start.getDate() + i);
     const key = toDateKey(value);
@@ -364,7 +364,7 @@ export default function PatientAppointments() {
           </div>
 
           <div className="space-y-2">
-            <div className="text-xs text-violet-300">Select date (next 7 days)</div>
+            <div className="text-xs text-violet-300">Select date (tomorrow + 7 days)</div>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {nextSevenDays.map((day) => {
                 const active = selectedDateKey === day.key;

@@ -169,6 +169,36 @@ async function initDbArtifacts() {
       "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Patient health reporting artifacts.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS health_metric_types (
+      "MetricTypeID" SERIAL PRIMARY KEY,
+      "name" VARCHAR(100) NOT NULL,
+      "unit" VARCHAR(50),
+      "min_value" DECIMAL(10,2),
+      "max_value" DECIMAL(10,2),
+      "description" TEXT
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS patient_metric_records (
+      "RecordID" SERIAL PRIMARY KEY,
+      "PatientID" INT NOT NULL REFERENCES patient_profiles("PatientID") ON DELETE CASCADE,
+      "MetricTypeID" INT NOT NULL REFERENCES health_metric_types("MetricTypeID") ON DELETE CASCADE,
+      "value" DECIMAL(10,2) NOT NULL,
+      "recorded_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      "source" VARCHAR(20) DEFAULT 'manual',
+      "notes" TEXT
+    )
+  `);
+}
+
+function parseOptionalNumber(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 async function getUserBySub(sub) {
@@ -226,7 +256,7 @@ async function ensureDefaultSlotsForDoctor(doctorId) {
   const minutes = [0, 30];
   const slotHours = [9, 10, 14, 15];
 
-  for (let offset = 1; offset <= 7; offset += 1) {
+  for (let offset = 1; offset <= 8; offset += 1) {
     const day = new Date(now);
     day.setDate(day.getDate() + offset);
 
@@ -268,13 +298,21 @@ function normalizeDateOnlyString(value) {
   return raw;
 }
 
+function formatLocalDateOnly(value) {
+  const d = new Date(value);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function buildEditableDateWindow() {
   const now = new Date();
   const values = [];
-  for (let i = 1; i <= 7; i += 1) {
+  for (let i = 1; i <= 8; i += 1) {
     const d = new Date(now);
     d.setDate(d.getDate() + i);
-    values.push(d.toISOString().slice(0, 10));
+    values.push(formatLocalDateOnly(d));
   }
   return values;
 }
@@ -1143,6 +1181,146 @@ app.get("/api/patient/linked-doctors", checkJwt, requireRole("patient"), async (
   }
 });
 
+// Patient: list supported health metric types used by report form.
+app.get("/api/patient/health-metric-types", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const metricTypes = await db.query(
+      `SELECT "MetricTypeID" AS metric_type_id, name, unit, min_value, max_value, description
+       FROM health_metric_types
+       ORDER BY name ASC`
+    );
+    return res.json({ metricTypes: metricTypes.rows });
+  } catch (error) {
+    console.error("/api/patient/health-metric-types error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load health metric types" });
+  }
+});
+
+// Patient: submit a structured daily report with multiple metric values.
+app.post("/api/patient/reports", checkJwt, requireRole("patient"), async (req, res) => {
+  const note = String(req.body?.note || "").trim().slice(0, 2000);
+  const recordedAtInput = req.body?.recordedAt;
+
+  const metricPayload = {
+    "Blood Pressure Systolic": parseOptionalNumber(req.body?.bloodPressureSystolic),
+    "Blood Pressure Diastolic": parseOptionalNumber(req.body?.bloodPressureDiastolic),
+    Weight: parseOptionalNumber(req.body?.weightKg),
+    "Sleep Duration": parseOptionalNumber(req.body?.sleepHours),
+    "Sleep Quality": parseOptionalNumber(req.body?.sleepQuality),
+    "Pain Level": parseOptionalNumber(req.body?.painLevel),
+  };
+
+  const providedMetrics = Object.entries(metricPayload).filter(([, value]) => value !== null);
+  if (!providedMetrics.length) {
+    return res.status(400).json({ error: "At least one metric value is required" });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+
+    const typeRows = await client.query(
+      `SELECT "MetricTypeID" AS metric_type_id, name, min_value, max_value
+       FROM health_metric_types
+       WHERE LOWER(name) = ANY($1::text[])`,
+      [providedMetrics.map(([name]) => name.toLowerCase())]
+    );
+
+    const typeMap = new Map(typeRows.rows.map((row) => [String(row.name || "").toLowerCase(), row]));
+    const missingTypes = providedMetrics
+      .map(([name]) => name)
+      .filter((name) => !typeMap.has(name.toLowerCase()));
+    if (missingTypes.length) {
+      await client.query("ROLLBACK");
+      return res.status(500).json({
+        error: `Missing health metric types: ${missingTypes.join(", ")}`,
+      });
+    }
+
+    let insertedCount = 0;
+    const effectiveRecordedAt = recordedAtInput ? new Date(recordedAtInput) : new Date();
+    if (Number.isNaN(effectiveRecordedAt.getTime())) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Invalid recordedAt" });
+    }
+
+    for (const [metricName, metricValue] of providedMetrics) {
+      const metricType = typeMap.get(metricName.toLowerCase());
+      if (!metricType) continue;
+
+      const min = metricType.min_value === null ? null : Number(metricType.min_value);
+      const max = metricType.max_value === null ? null : Number(metricType.max_value);
+      if ((min !== null && metricValue < min) || (max !== null && metricValue > max)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `${metricName} must be between ${min ?? "-inf"} and ${max ?? "inf"}`,
+        });
+      }
+
+      await client.query(
+        `INSERT INTO patient_metric_records ("PatientID", "MetricTypeID", "value", "recorded_at", "source", "notes")
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [
+          patientProfile.PatientID,
+          metricType.metric_type_id,
+          metricValue,
+          effectiveRecordedAt.toISOString(),
+          "manual",
+          note || null,
+        ]
+      );
+      insertedCount += 1;
+    }
+
+    await client.query("COMMIT");
+    return res.json({
+      success: true,
+      insertedCount,
+      recordedAt: effectiveRecordedAt.toISOString(),
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("/api/patient/reports POST error:", error.message || error);
+    return res.status(500).json({ error: "Failed to submit patient report" });
+  } finally {
+    client.release();
+  }
+});
+
+// Patient: fetch recent report rows for personal timeline.
+app.get("/api/patient/reports", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 100;
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+
+    const records = await db.query(
+      `SELECT
+          r."RecordID" AS record_id,
+          r."recorded_at",
+          r."value",
+          r."source",
+          r."notes",
+          t."MetricTypeID" AS metric_type_id,
+          t.name AS metric_name,
+          t.unit AS metric_unit
+       FROM patient_metric_records r
+       JOIN health_metric_types t ON t."MetricTypeID"=r."MetricTypeID"
+       WHERE r."PatientID"=$1
+       ORDER BY r."recorded_at" DESC, r."RecordID" DESC
+       LIMIT $2`,
+      [patientProfile.PatientID, limit]
+    );
+
+    return res.json({ records: records.rows });
+  } catch (error) {
+    console.error("/api/patient/reports GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient reports" });
+  }
+});
+
 // Patient: list appointment slots for a linked doctor (available + unavailable).
 app.get("/api/patient/doctors/:doctorId/slots", checkJwt, requireRole("patient"), async (req, res) => {
   try {
@@ -1218,7 +1396,7 @@ app.post("/api/patient/appointments", checkJwt, requireRole("patient"), async (r
        FROM appointment_slots s
        LEFT JOIN appointment_slot_availability a ON a."SlotID"=s."SlotID"
        WHERE s."SlotID"=$1
-       FOR UPDATE`,
+       FOR UPDATE OF s`,
       [slotId]
     );
     if (!slotRes.rows.length) {
