@@ -6,8 +6,10 @@ export default function PatientNotifications() {
   const { getAccessTokenSilently } = useAuth0();
   const [incomingMatches, setIncomingMatches] = useState([]);
   const [appointments, setAppointments] = useState([]);
+  const [advices, setAdvices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [busyRequestId, setBusyRequestId] = useState(null);
+  const [busyAdviceId, setBusyAdviceId] = useState(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("success");
 
@@ -22,6 +24,7 @@ export default function PatientNotifications() {
       if (!res.ok) throw new Error(payload.error || "Failed to load notifications");
       setIncomingMatches(payload.incomingMatches || []);
       setAppointments(payload.appointments || []);
+      setAdvices(payload.advices || []);
     } catch (error) {
       setMessageType("error");
       setMessage(error.message || "Failed to load notifications");
@@ -58,6 +61,38 @@ export default function PatientNotifications() {
     } finally {
       setBusyRequestId(null);
     }
+  }
+
+  async function acknowledgeAdvice(adviceId) {
+    setBusyAdviceId(adviceId);
+    setMessage("");
+    try {
+      const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+      const res = await fetch(apiUrl(`/api/patient/advices/${adviceId}/acknowledge`), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || "Failed to acknowledge advice");
+      setMessageType("success");
+      setMessage("Advice confirmed as received.");
+      await loadNotifications();
+    } catch (error) {
+      setMessageType("error");
+      setMessage(error.message || "Failed to acknowledge advice");
+    } finally {
+      setBusyAdviceId(null);
+    }
+  }
+
+  function urgencyLabel(value) {
+    const norm = String(value || "").toLowerCase();
+    if (norm === "urgent") return "Urgent";
+    if (norm === "low") return "Not Urgent";
+    return "Normal";
   }
 
   return (
@@ -107,6 +142,42 @@ export default function PatientNotifications() {
             })
           ) : (
             <div className="text-sm text-violet-300/80">No pending connection requests.</div>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-violet-300/15 bg-violet-900/30 p-5">
+        <h2 className="text-base font-semibold text-white">Unacknowledged Medical Advice</h2>
+        <div className="mt-3 space-y-2">
+          {advices.length ? (
+            advices.map((a) => {
+              const busy = busyAdviceId === a.AdviceID;
+              return (
+                <div key={a.AdviceID} className="rounded-xl border border-violet-300/15 bg-[#1a1335] p-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-semibold text-white">{a.doctor_name || "Doctor"}</div>
+                    <span className="rounded-full border border-violet-300/30 px-2 py-0.5 text-xs text-violet-200">
+                      {urgencyLabel(a.urgency)}
+                    </span>
+                  </div>
+                  <div className="text-xs text-violet-300/90 break-all">{a.doctor_email}</div>
+                  <div className="mt-1 text-xs text-violet-200/90">{a.content}</div>
+                  <div className="mt-1 text-xs text-violet-300/80">{new Date(a.created_at).toLocaleString()}</div>
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => acknowledgeAdvice(a.AdviceID)}
+                      className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-3 py-1.5 text-xs text-white"
+                    >
+                      {busy ? "Working..." : "Confirm received"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="text-sm text-violet-300/80">No unacknowledged advice.</div>
           )}
         </div>
       </div>

@@ -25,6 +25,7 @@ import PatientReportForm from "./pages/patient/PatientReportForm.jsx";
 import PatientAppointments from "./pages/patient/PatientAppointments.jsx";
 import PatientAccount from "./pages/patient/PatientAccount.jsx";
 import PatientNotifications from "./pages/patient/PatientNotifications.jsx";
+import PatientAdvice from "./pages/patient/PatientAdvice.jsx";
 
 import RoleSelection from "./pages/RoleSelection.jsx";
 import VerifyWrapper from "./pages/VerifyWrapper.jsx";
@@ -42,8 +43,8 @@ function titleFromPath(pathname) {
   if (pathname.startsWith("/patients/new")) return "Add New Patient";
   if (pathname.startsWith("/patients")) return "Patient List";
   if (pathname.startsWith("/notifications")) return "Notifications";
-  if (pathname.startsWith("/reports/overview")) return "Reports — Overview";
-  if (pathname.startsWith("/reports/detail")) return "Reports — Detailed report";
+  if (pathname.startsWith("/reports/overview")) return "Daily Reports";
+  if (pathname.startsWith("/reports/detail")) return "Patient Report Detail";
   if (pathname.startsWith("/settings/account")) return "Account Settings";
   if (pathname.startsWith("/settings/notifications")) return "Notification Settings";
   if (pathname.startsWith("/help")) return "Help";
@@ -110,6 +111,7 @@ function patientTitleFromPath(pathname) {
   if (pathname.startsWith("/patient/history")) return "My Health History";
   if (pathname.startsWith("/patient/report")) return "Daily Condition Report";
   if (pathname.startsWith("/patient/appointments")) return "Appointments";
+  if (pathname.startsWith("/patient/advice")) return "Medical Advice";
   if (pathname.startsWith("/patient/notifications")) return "Notifications";
   if (pathname.startsWith("/patient/account")) return "Account Settings";
   return "Patient Dashboard";
@@ -129,7 +131,7 @@ function PatientLayout({ user, logout, getAccessTokenSilently }) {
         });
         if (!res.ok) return;
         const payload = await res.json();
-        const nextCount = payload.incomingMatches?.length || 0;
+        const nextCount = (payload.incomingMatches?.length || 0) + (payload.advices?.length || 0);
         setNotificationCount(nextCount);
       } catch {
         setNotificationCount(0);
@@ -150,6 +152,7 @@ function PatientLayout({ user, logout, getAccessTokenSilently }) {
           <Route path="/patient/history" element={<PatientHistory />} />
           <Route path="/patient/report" element={<PatientReportForm />} />
           <Route path="/patient/appointments" element={<PatientAppointments />} />
+          <Route path="/patient/advice" element={<PatientAdvice />} />
           <Route path="/patient/notifications" element={<PatientNotifications />} />
           <Route path="/patient/account" element={<PatientAccount />} />
           <Route path="*" element={<Navigate to="/" replace />} />

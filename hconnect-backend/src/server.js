@@ -193,12 +193,44 @@ async function initDbArtifacts() {
       "notes" TEXT
     )
   `);
+
+  // Doctor written advice for linked patients.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS patient_advices (
+      "AdviceID" SERIAL PRIMARY KEY,
+      "DoctorID" INT NOT NULL REFERENCES doctor_profiles("DoctorID") ON DELETE CASCADE,
+      "PatientID" INT NOT NULL REFERENCES patient_profiles("PatientID") ON DELETE CASCADE,
+      "content" TEXT NOT NULL,
+      "urgency" VARCHAR(20) NOT NULL CHECK ("urgency" IN ('urgent', 'normal', 'low')),
+      "is_acknowledged" BOOLEAN NOT NULL DEFAULT FALSE,
+      "acknowledged_at" TIMESTAMP,
+      "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_patient_advices_patient_created
+    ON patient_advices ("PatientID", "created_at" DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_patient_advices_pending
+    ON patient_advices ("PatientID", "is_acknowledged", "created_at" DESC)
+  `);
 }
 
 function parseOptionalNumber(value) {
   if (value === undefined || value === null || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getLocalDayBounds(value = new Date()) {
+  const d = new Date(value);
+  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
 }
 
 async function getUserBySub(sub) {
@@ -315,6 +347,14 @@ function buildEditableDateWindow() {
     values.push(formatLocalDateOnly(d));
   }
   return values;
+}
+
+function normalizeAdviceUrgency(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (["urgent", "紧急"].includes(raw)) return "urgent";
+  if (["normal", "一般"].includes(raw)) return "normal";
+  if (["low", "not urgent", "non-urgent", "不紧急"].includes(raw)) return "low";
+  return null;
 }
 
 function requireRole(role) {
@@ -1047,7 +1087,7 @@ app.get("/api/doctor/match-requests", checkJwt, requireRole("doctor"), async (re
     );
 
     const linked = await db.query(
-      `SELECT rel."RelationID", rel."status", rel."created_at",
+      `SELECT rel."RelationID", rel."PatientID" AS patient_id, rel."status", rel."created_at",
               u."name" AS patient_name, u."email" AS patient_email
        FROM doctor_patient_relations rel
        JOIN patient_profiles pp ON pp."PatientID"=rel."PatientID"
@@ -1199,7 +1239,6 @@ app.get("/api/patient/health-metric-types", checkJwt, requireRole("patient"), as
 // Patient: submit a structured daily report with multiple metric values.
 app.post("/api/patient/reports", checkJwt, requireRole("patient"), async (req, res) => {
   const note = String(req.body?.note || "").trim().slice(0, 2000);
-  const recordedAtInput = req.body?.recordedAt;
 
   const metricPayload = {
     "Blood Pressure Systolic": parseOptionalNumber(req.body?.bloodPressureSystolic),
@@ -1220,6 +1259,24 @@ app.post("/api/patient/reports", checkJwt, requireRole("patient"), async (req, r
     await client.query("BEGIN");
 
     const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+    const profileRow = await client.query(
+      `SELECT "PatientID" FROM patient_profiles WHERE "PatientID"=$1 FOR UPDATE`,
+      [patientProfile.PatientID]
+    );
+    if (!profileRow.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Patient profile not found" });
+    }
+
+    const { start: dayStart, end: dayEnd } = getLocalDayBounds();
+    const existingToday = await client.query(
+      `SELECT "RecordID", "recorded_at"
+       FROM patient_metric_records
+       WHERE "PatientID"=$1 AND "recorded_at" >= $2 AND "recorded_at" < $3
+       ORDER BY "recorded_at" ASC, "RecordID" ASC
+       FOR UPDATE`,
+      [patientProfile.PatientID, dayStart.toISOString(), dayEnd.toISOString()]
+    );
 
     const typeRows = await client.query(
       `SELECT "MetricTypeID" AS metric_type_id, name, min_value, max_value
@@ -1240,10 +1297,16 @@ app.post("/api/patient/reports", checkJwt, requireRole("patient"), async (req, r
     }
 
     let insertedCount = 0;
-    const effectiveRecordedAt = recordedAtInput ? new Date(recordedAtInput) : new Date();
-    if (Number.isNaN(effectiveRecordedAt.getTime())) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Invalid recordedAt" });
+    const isUpdate = existingToday.rows.length > 0;
+    const effectiveRecordedAt = isUpdate
+      ? new Date(existingToday.rows[0].recorded_at)
+      : new Date();
+    if (isUpdate) {
+      await client.query(
+        `DELETE FROM patient_metric_records
+         WHERE "PatientID"=$1 AND "recorded_at" >= $2 AND "recorded_at" < $3`,
+        [patientProfile.PatientID, dayStart.toISOString(), dayEnd.toISOString()]
+      );
     }
 
     for (const [metricName, metricValue] of providedMetrics) {
@@ -1277,6 +1340,7 @@ app.post("/api/patient/reports", checkJwt, requireRole("patient"), async (req, r
     await client.query("COMMIT");
     return res.json({
       success: true,
+      mode: isUpdate ? "updated" : "created",
       insertedCount,
       recordedAt: effectiveRecordedAt.toISOString(),
     });
@@ -1286,6 +1350,58 @@ app.post("/api/patient/reports", checkJwt, requireRole("patient"), async (req, r
     return res.status(500).json({ error: "Failed to submit patient report" });
   } finally {
     client.release();
+  }
+});
+
+// Patient: fetch today's report (single daily report, if exists).
+app.get("/api/patient/reports/today", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+    const { start: dayStart, end: dayEnd } = getLocalDayBounds();
+
+    const rows = await db.query(
+      `SELECT
+          r."RecordID" AS record_id,
+          r."recorded_at",
+          r."value",
+          r."notes",
+          t.name AS metric_name,
+          t.unit AS metric_unit
+       FROM patient_metric_records r
+       JOIN health_metric_types t ON t."MetricTypeID"=r."MetricTypeID"
+       WHERE r."PatientID"=$1 AND r."recorded_at" >= $2 AND r."recorded_at" < $3
+       ORDER BY t.name ASC, r."RecordID" ASC`,
+      [patientProfile.PatientID, dayStart.toISOString(), dayEnd.toISOString()]
+    );
+
+    const metrics = {
+      bloodPressureSystolic: "",
+      bloodPressureDiastolic: "",
+      weightKg: "",
+      sleepHours: "",
+      sleepQuality: "",
+      painLevel: "",
+    };
+
+    for (const row of rows.rows) {
+      const metricName = String(row.metric_name || "").toLowerCase();
+      if (metricName === "blood pressure systolic") metrics.bloodPressureSystolic = String(row.value ?? "");
+      if (metricName === "blood pressure diastolic") metrics.bloodPressureDiastolic = String(row.value ?? "");
+      if (metricName === "weight") metrics.weightKg = String(row.value ?? "");
+      if (metricName === "sleep duration") metrics.sleepHours = String(row.value ?? "");
+      if (metricName === "sleep quality") metrics.sleepQuality = String(row.value ?? "");
+      if (metricName === "pain level") metrics.painLevel = String(row.value ?? "");
+    }
+
+    return res.json({
+      hasReport: rows.rows.length > 0,
+      recordedAt: rows.rows[0]?.recorded_at || null,
+      note: rows.rows[0]?.notes || "",
+      metrics,
+    });
+  } catch (error) {
+    console.error("/api/patient/reports/today GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load today's report" });
   }
 });
 
@@ -1318,6 +1434,452 @@ app.get("/api/patient/reports", checkJwt, requireRole("patient"), async (req, re
   } catch (error) {
     console.error("/api/patient/reports GET error:", error.message || error);
     return res.status(500).json({ error: "Failed to load patient reports" });
+  }
+});
+
+// Patient: fetch paginated report entries (one entry per submission timestamp).
+app.get("/api/patient/reports/paged", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const pageRaw = Number(req.query.page);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 7;
+    const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+    const offset = (page - 1) * limit;
+
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM (
+         SELECT DISTINCT r."recorded_at"
+         FROM patient_metric_records r
+         WHERE r."PatientID"=$1
+       ) x`,
+      [patientProfile.PatientID]
+    );
+    const total = totalRes.rows[0]?.total || 0;
+    const pages = total > 0 ? Math.ceil(total / limit) : 1;
+
+    const reportSlots = await db.query(
+      `SELECT
+          r."recorded_at",
+          MAX(r."notes") AS notes,
+          COUNT(*)::int AS metric_count
+       FROM patient_metric_records r
+       WHERE r."PatientID"=$1
+       GROUP BY r."recorded_at"
+       ORDER BY r."recorded_at" DESC
+       LIMIT $2 OFFSET $3`,
+      [patientProfile.PatientID, limit, offset]
+    );
+
+    const selectedTimes = reportSlots.rows.map((row) => row.recorded_at);
+    let reportRecords = [];
+    if (selectedTimes.length) {
+      const rawRecords = await db.query(
+        `SELECT
+            r."RecordID" AS record_id,
+            r."recorded_at",
+            r."value",
+            r."source",
+            r."notes",
+            t.name AS metric_name,
+            t.unit AS metric_unit
+         FROM patient_metric_records r
+         JOIN health_metric_types t ON t."MetricTypeID"=r."MetricTypeID"
+         WHERE r."PatientID"=$1 AND r."recorded_at" = ANY($2::timestamp[])
+         ORDER BY r."recorded_at" DESC, t.name ASC, r."RecordID" ASC`,
+        [patientProfile.PatientID, selectedTimes]
+      );
+      reportRecords = rawRecords.rows;
+    }
+
+    return res.json({
+      reportSlots: reportSlots.rows,
+      reportRecords,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages,
+      },
+    });
+  } catch (error) {
+    console.error("/api/patient/reports/paged GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load paginated patient reports" });
+  }
+});
+
+// Doctor: list linked patients with latest report timestamp for overview page.
+app.get("/api/doctor/reports/patients", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+    const rows = await db.query(
+      `SELECT
+          pp."PatientID" AS patient_id,
+          u."name" AS patient_name,
+          u."email" AS patient_email,
+          MAX(r."recorded_at") AS last_report_at
+       FROM doctor_patient_relations rel
+       JOIN patient_profiles pp ON pp."PatientID"=rel."PatientID"
+       JOIN users u ON u."UserID"=pp."UserID"
+       LEFT JOIN patient_metric_records r ON r."PatientID"=pp."PatientID"
+       WHERE rel."DoctorID"=$1 AND LOWER(rel."status"::text)='active'
+       GROUP BY pp."PatientID", u."name", u."email"
+       ORDER BY MAX(r."recorded_at") DESC NULLS LAST, u."name" ASC, u."email" ASC`,
+      [doctorProfile.DoctorID]
+    );
+
+    return res.json({ patients: rows.rows });
+  } catch (error) {
+    console.error("/api/doctor/reports/patients error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient reports overview" });
+  }
+});
+
+// Doctor: fetch 7-day averages for one linked patient.
+app.get("/api/doctor/reports/patients/:patientId/averages", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const patientId = Number(req.params.patientId);
+    if (!Number.isInteger(patientId) || patientId <= 0) {
+      return res.status(400).json({ error: "Invalid patientId" });
+    }
+
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+    const relation = await db.query(
+      `SELECT 1 FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 AND LOWER("status"::text)='active' LIMIT 1`,
+      [doctorProfile.DoctorID, patientId]
+    );
+    if (!relation.rows.length) {
+      return res.status(403).json({ error: "Patient is not linked to this doctor" });
+    }
+
+    const averages = await db.query(
+      `SELECT
+          t.name AS metric_name,
+          t.unit AS metric_unit,
+          AVG(r."value")::numeric(10,2) AS avg_value
+       FROM patient_metric_records r
+       JOIN health_metric_types t ON t."MetricTypeID"=r."MetricTypeID"
+       WHERE r."PatientID"=$1 AND r."recorded_at" >= NOW() - INTERVAL '7 days'
+       GROUP BY t.name, t.unit
+       ORDER BY t.name ASC`,
+      [patientId]
+    );
+
+    return res.json({ averages: averages.rows });
+  } catch (error) {
+    console.error("/api/doctor/reports/patients/:patientId/averages error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient averages" });
+  }
+});
+
+// Doctor: fetch one linked patient's detailed report data (averages, trends, paginated report entries).
+app.get("/api/doctor/reports/patients/:patientId", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const patientId = Number(req.params.patientId);
+    const limitRaw = Number(req.query.limit);
+    const pageRaw = Number(req.query.page);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 7;
+    const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+    const offset = (page - 1) * limit;
+
+    if (!Number.isInteger(patientId) || patientId <= 0) {
+      return res.status(400).json({ error: "Invalid patientId" });
+    }
+
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+    const relation = await db.query(
+      `SELECT 1 FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 AND LOWER("status"::text)='active' LIMIT 1`,
+      [doctorProfile.DoctorID, patientId]
+    );
+    if (!relation.rows.length) {
+      return res.status(403).json({ error: "Patient is not linked to this doctor" });
+    }
+
+    const patientRow = await db.query(
+      `SELECT pp."PatientID" AS patient_id, u."name" AS patient_name, u."email" AS patient_email
+       FROM patient_profiles pp
+       JOIN users u ON u."UserID"=pp."UserID"
+       WHERE pp."PatientID"=$1
+       LIMIT 1`,
+      [patientId]
+    );
+    if (!patientRow.rows.length) {
+      return res.status(404).json({ error: "Patient not found" });
+    }
+
+    const averages = await db.query(
+      `SELECT
+          t.name AS metric_name,
+          t.unit AS metric_unit,
+          AVG(r."value")::numeric(10,2) AS avg_value
+       FROM patient_metric_records r
+       JOIN health_metric_types t ON t."MetricTypeID"=r."MetricTypeID"
+       WHERE r."PatientID"=$1 AND r."recorded_at" >= NOW() - INTERVAL '7 days'
+       GROUP BY t.name, t.unit
+       ORDER BY t.name ASC`,
+      [patientId]
+    );
+
+    const trendRecords = await db.query(
+      `SELECT
+          r."RecordID" AS record_id,
+          r."recorded_at",
+          r."value",
+          r."notes",
+          t.name AS metric_name,
+          t.unit AS metric_unit
+       FROM patient_metric_records r
+       JOIN health_metric_types t ON t."MetricTypeID"=r."MetricTypeID"
+       WHERE r."PatientID"=$1 AND r."recorded_at" >= NOW() - INTERVAL '7 days'
+       ORDER BY r."recorded_at" DESC, r."RecordID" DESC`,
+      [patientId]
+    );
+
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM (
+         SELECT DISTINCT r."recorded_at"
+         FROM patient_metric_records r
+         WHERE r."PatientID"=$1
+       ) x`,
+      [patientId]
+    );
+    const total = totalRes.rows[0]?.total || 0;
+    const pages = total > 0 ? Math.ceil(total / limit) : 1;
+
+    const reportSlots = await db.query(
+      `SELECT
+          r."recorded_at",
+          MAX(r."notes") AS notes,
+          COUNT(*)::int AS metric_count
+       FROM patient_metric_records r
+       WHERE r."PatientID"=$1
+       GROUP BY r."recorded_at"
+       ORDER BY r."recorded_at" DESC
+       LIMIT $2 OFFSET $3`,
+      [patientId, limit, offset]
+    );
+
+    const selectedTimes = reportSlots.rows.map((row) => row.recorded_at);
+    let reportRecords = [];
+    if (selectedTimes.length) {
+      const rawRecords = await db.query(
+        `SELECT
+            r."RecordID" AS record_id,
+            r."recorded_at",
+            r."value",
+            r."source",
+            r."notes",
+            t.name AS metric_name,
+            t.unit AS metric_unit
+         FROM patient_metric_records r
+         JOIN health_metric_types t ON t."MetricTypeID"=r."MetricTypeID"
+         WHERE r."PatientID"=$1 AND r."recorded_at" = ANY($2::timestamp[])
+         ORDER BY r."recorded_at" DESC, t.name ASC, r."RecordID" ASC`,
+        [patientId, selectedTimes]
+      );
+      reportRecords = rawRecords.rows;
+    }
+
+    return res.json({
+      patient: patientRow.rows[0],
+      averages: averages.rows,
+      trendRecords: trendRecords.rows,
+      reportSlots: reportSlots.rows,
+      reportRecords,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages,
+      },
+    });
+  } catch (error) {
+    console.error("/api/doctor/reports/patients/:patientId error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient report details" });
+  }
+});
+
+// Doctor: create one advice for a linked patient.
+app.post("/api/doctor/patients/:patientId/advices", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const patientId = Number(req.params.patientId);
+    const content = String(req.body?.content || "").trim().slice(0, 3000);
+    const urgency = normalizeAdviceUrgency(req.body?.urgency);
+
+    if (!Number.isInteger(patientId) || patientId <= 0) {
+      return res.status(400).json({ error: "Invalid patientId" });
+    }
+    if (!content) {
+      return res.status(400).json({ error: "content is required" });
+    }
+    if (!urgency) {
+      return res.status(400).json({ error: "urgency must be one of: urgent, normal, low" });
+    }
+
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+    const relation = await db.query(
+      `SELECT 1 FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 AND LOWER("status"::text)='active' LIMIT 1`,
+      [doctorProfile.DoctorID, patientId]
+    );
+    if (!relation.rows.length) {
+      return res.status(403).json({ error: "Patient is not linked to this doctor" });
+    }
+
+    const inserted = await db.query(
+      `INSERT INTO patient_advices ("DoctorID", "PatientID", "content", "urgency")
+       VALUES ($1,$2,$3,$4)
+       RETURNING "AdviceID", "DoctorID", "PatientID", "content", "urgency", "is_acknowledged", "acknowledged_at", "created_at"`,
+      [doctorProfile.DoctorID, patientId, content, urgency]
+    );
+
+    return res.json({ success: true, advice: inserted.rows[0] });
+  } catch (error) {
+    console.error("/api/doctor/patients/:patientId/advices POST error:", error.message || error);
+    return res.status(500).json({ error: "Failed to create patient advice" });
+  }
+});
+
+// Doctor: list recent advices for one linked patient with pagination.
+app.get("/api/doctor/patients/:patientId/advices", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const patientId = Number(req.params.patientId);
+    const limitRaw = Number(req.query.limit);
+    const pageRaw = Number(req.query.page);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 5;
+    const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+    const offset = (page - 1) * limit;
+
+    if (!Number.isInteger(patientId) || patientId <= 0) {
+      return res.status(400).json({ error: "Invalid patientId" });
+    }
+
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+    const relation = await db.query(
+      `SELECT 1 FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 AND LOWER("status"::text)='active' LIMIT 1`,
+      [doctorProfile.DoctorID, patientId]
+    );
+    if (!relation.rows.length) {
+      return res.status(403).json({ error: "Patient is not linked to this doctor" });
+    }
+
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total FROM patient_advices WHERE "DoctorID"=$1 AND "PatientID"=$2`,
+      [doctorProfile.DoctorID, patientId]
+    );
+    const total = totalRes.rows[0]?.total || 0;
+    const pages = total > 0 ? Math.ceil(total / limit) : 1;
+
+    const advices = await db.query(
+      `SELECT
+          "AdviceID",
+          "content",
+          "urgency",
+          "is_acknowledged",
+          "acknowledged_at",
+          "created_at"
+       FROM patient_advices
+       WHERE "DoctorID"=$1 AND "PatientID"=$2
+       ORDER BY "created_at" DESC
+       LIMIT $3 OFFSET $4`,
+      [doctorProfile.DoctorID, patientId, limit, offset]
+    );
+
+    return res.json({
+      advices: advices.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages,
+      },
+    });
+  } catch (error) {
+    console.error("/api/doctor/patients/:patientId/advices GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient advice history" });
+  }
+});
+
+// Patient: list all advices with pagination.
+app.get("/api/patient/advices", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const pageRaw = Number(req.query.page);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 5;
+    const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+    const offset = (page - 1) * limit;
+
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total FROM patient_advices WHERE "PatientID"=$1`,
+      [patientProfile.PatientID]
+    );
+    const total = totalRes.rows[0]?.total || 0;
+    const pages = total > 0 ? Math.ceil(total / limit) : 1;
+
+    const advices = await db.query(
+      `SELECT
+          a."AdviceID",
+          a."content",
+          a."urgency",
+          a."is_acknowledged",
+          a."acknowledged_at",
+          a."created_at",
+          du."name" AS doctor_name,
+          du."email" AS doctor_email
+       FROM patient_advices a
+       JOIN doctor_profiles dp ON dp."DoctorID"=a."DoctorID"
+       JOIN users du ON du."UserID"=dp."UserID"
+       WHERE a."PatientID"=$1
+       ORDER BY a."created_at" DESC
+       LIMIT $2 OFFSET $3`,
+      [patientProfile.PatientID, limit, offset]
+    );
+
+    return res.json({
+      advices: advices.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages,
+      },
+    });
+  } catch (error) {
+    console.error("/api/patient/advices GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient advices" });
+  }
+});
+
+// Patient: acknowledge receipt for one advice.
+app.post("/api/patient/advices/:adviceId/acknowledge", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const adviceId = Number(req.params.adviceId);
+    if (!Number.isInteger(adviceId) || adviceId <= 0) {
+      return res.status(400).json({ error: "Invalid adviceId" });
+    }
+
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+    const updated = await db.query(
+      `UPDATE patient_advices
+       SET "is_acknowledged"=TRUE,
+           "acknowledged_at"=COALESCE("acknowledged_at", CURRENT_TIMESTAMP)
+       WHERE "AdviceID"=$1 AND "PatientID"=$2
+       RETURNING "AdviceID", "is_acknowledged", "acknowledged_at"`,
+      [adviceId, patientProfile.PatientID]
+    );
+
+    if (!updated.rows.length) {
+      return res.status(404).json({ error: "Advice not found" });
+    }
+
+    return res.json({ success: true, advice: updated.rows[0] });
+  } catch (error) {
+    console.error("/api/patient/advices/:adviceId/acknowledge POST error:", error.message || error);
+    return res.status(500).json({ error: "Failed to acknowledge advice" });
   }
 });
 
@@ -1467,7 +2029,23 @@ app.get("/api/patient/notifications", checkJwt, requireRole("patient"), async (r
       [patientProfile.PatientID]
     );
 
-    return res.json({ incomingMatches: incomingMatches.rows, appointments: appointments.rows });
+    const advices = await db.query(
+      `SELECT
+          a."AdviceID",
+          a."content",
+          a."urgency",
+          a."created_at",
+          du."name" AS doctor_name,
+          du."email" AS doctor_email
+       FROM patient_advices a
+       JOIN doctor_profiles dp ON dp."DoctorID"=a."DoctorID"
+       JOIN users du ON du."UserID"=dp."UserID"
+       WHERE a."PatientID"=$1 AND a."is_acknowledged"=FALSE
+       ORDER BY a."created_at" DESC`,
+      [patientProfile.PatientID]
+    );
+
+    return res.json({ incomingMatches: incomingMatches.rows, appointments: appointments.rows, advices: advices.rows });
   } catch (error) {
     console.error("/api/patient/notifications error:", error.message || error);
     return res.status(500).json({ error: "Failed to load patient notifications" });

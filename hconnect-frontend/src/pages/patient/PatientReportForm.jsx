@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
 import { apiUrl } from "../../lib/api.js";
 
@@ -19,6 +19,38 @@ export default function PatientReportForm() {
   const [saved, setSaved] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("success");
+  const [loadingToday, setLoadingToday] = useState(false);
+  const [hasTodayReport, setHasTodayReport] = useState(false);
+
+  useEffect(() => {
+    async function loadTodayReport() {
+      setLoadingToday(true);
+      setMessage("");
+      try {
+        const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+        const res = await fetch(apiUrl("/api/patient/reports/today"), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || "Failed to load today's report");
+
+        const nextForm = {
+          ...initial,
+          ...(payload.metrics || {}),
+          notes: payload.note || "",
+        };
+        setForm(nextForm);
+        setHasTodayReport(Boolean(payload.hasReport));
+      } catch (error) {
+        setMessageType("error");
+        setMessage(error.message || "Failed to load today's report");
+      } finally {
+        setLoadingToday(false);
+      }
+    }
+
+    loadTodayReport();
+  }, [getAccessTokenSilently]);
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -52,9 +84,9 @@ export default function PatientReportForm() {
       if (!res.ok) throw new Error(payload.error || "Failed to submit report");
 
       setSaved(true);
+      setHasTodayReport(true);
       setMessageType("success");
-      setMessage("Report submitted successfully.");
-      setForm(initial);
+      setMessage(payload.mode === "updated" ? "Today's report updated successfully." : "Today's report submitted successfully.");
     } catch (error) {
       setSaved(false);
       setMessageType("error");
@@ -69,6 +101,13 @@ export default function PatientReportForm() {
       <form onSubmit={handleSubmit} className="rounded-2xl border border-violet-300/15 bg-violet-900/30 p-5 space-y-4">
         <h2 className="text-base font-semibold text-white">Daily condition report</h2>
         <p className="text-sm text-violet-300/80">Share how you feel today so your care team can monitor progress.</p>
+        {!loadingToday && !hasTodayReport ? (
+          <div className="text-sm text-amber-300">You have not submitted a report today.</div>
+        ) : null}
+        {!loadingToday && hasTodayReport ? (
+          <div className="text-sm text-sky-300">Today's report is loaded. You can update it below.</div>
+        ) : null}
+        {loadingToday ? <div className="text-sm text-violet-300/80">Loading today's report...</div> : null}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <label className="block">
@@ -168,7 +207,7 @@ export default function PatientReportForm() {
           disabled={submitting}
           className="rounded-xl bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-white px-5 py-2.5 text-sm font-semibold transition"
         >
-          {submitting ? "Submitting..." : "Submit report"}
+          {submitting ? "Submitting..." : hasTodayReport ? "Update today's report" : "Submit today's report"}
         </button>
 
         {saved ? <div className="text-sm text-emerald-300">Report saved successfully.</div> : null}

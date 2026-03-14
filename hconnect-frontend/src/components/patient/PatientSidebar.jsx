@@ -7,6 +7,7 @@ const links = [
   { to: "/patient/history", label: "My Health History", icon: "◔" },
   { to: "/patient/report", label: "Daily Report", icon: "✎" },
   { to: "/patient/appointments", label: "Appointments", icon: "◷" },
+  { to: "/patient/advice", label: "Medical Advice", icon: "🩺" },
   { to: "/patient/notifications", label: "Notifications", icon: "🔔" },
   { to: "/patient/account", label: "Account Settings", icon: "⚙" },
 ];

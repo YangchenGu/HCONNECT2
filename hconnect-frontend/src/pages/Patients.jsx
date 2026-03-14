@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
+import { useNavigate } from "react-router-dom";
 import Card from "../components/Card.jsx";
 import KPI from "../components/KPI.jsx";
 import { apiUrl } from "../lib/api.js";
 
 export default function Patients({ search }) {
   const { getAccessTokenSilently, isAuthenticated } = useAuth0();
+  const navigate = useNavigate();
   const [relationData, setRelationData] = useState({ pending: [], linked: [] });
   const [loading, setLoading] = useState(false);
   const [info, setInfo] = useState("");
@@ -65,6 +67,7 @@ export default function Patients({ search }) {
                 <th className="py-2 pr-4">Patient</th>
                 <th className="py-2 pr-4">Status</th>
                 <th className="py-2 pr-4">Relationship Since</th>
+                <th className="py-2 pr-4 text-right">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -88,12 +91,22 @@ export default function Patients({ search }) {
                   <td className="py-3 pr-4 text-slate-700">
                     {p.created_at ? new Date(p.created_at).toLocaleDateString() : "-"}
                   </td>
+                  <td className="py-3 pr-4 text-right">
+                    <button
+                      type="button"
+                      disabled={!p.patient_id}
+                      onClick={() => navigate(`/reports/detail?patientId=${p.patient_id}`)}
+                      className="rounded-xl px-3 py-2 text-xs bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-50"
+                    >
+                      View detailed report
+                    </button>
+                  </td>
                 </tr>
               ))}
 
               {filteredLinked.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="py-8 text-center text-slate-500">
+                  <td colSpan={4} className="py-8 text-center text-slate-500">
                     No linked patients yet.
                   </td>
                 </tr>

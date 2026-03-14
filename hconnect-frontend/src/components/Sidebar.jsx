@@ -16,10 +16,9 @@ const NAV = [
     items: [{ to: "/appointments", label: "Appointment", icon: "📅" }],
   },
   {
-    section: "Report & Analysis",
+    section: "Reports",
     items: [
-      { to: "/reports/overview", label: "Overview", icon: "🧾" },
-      { to: "/reports/detail", label: "Detailed report", icon: "📈" },
+      { to: "/reports/overview", label: "Daily reports", icon: "🧾" },
     ],
   },
   { section: "Notifications", items: [{ to: "/notifications", label: "Notifications", icon: "🔔" }] },
