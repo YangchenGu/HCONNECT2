@@ -1,0 +1,86 @@
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Small defaults to match the "clean right-side UI" feeling */
+:root {
+  color-scheme: light;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Keep element scrollable but hide scrollbar UI */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Doctor theme: low-saturation dark purple applied across legacy utility-heavy pages */
+.doctor-theme .bg-white {
+  background-color: #1a1733 !important;
+}
+
+.doctor-theme .bg-slate-50 {
+  background-color: #211b3f !important;
+}
+
+.doctor-theme .text-slate-900,
+.doctor-theme .text-gray-900 {
+  color: #e2e8f0 !important;
+}
+
+.doctor-theme .text-slate-700,
+.doctor-theme .text-gray-700,
+.doctor-theme .text-slate-600,
+.doctor-theme .text-gray-600,
+.doctor-theme .text-slate-500,
+.doctor-theme .text-gray-500 {
+  color: #94a3b8 !important;
+}
+
+.doctor-theme input,
+.doctor-theme select,
+.doctor-theme textarea {
+  background-color: #14102a !important;
+  color: #e2e8f0 !important;
+  border-color: rgba(167, 139, 250, 0.32) !important;
+}
+
+.doctor-theme input::placeholder,
+.doctor-theme textarea::placeholder {
+  color: #8f8aa8 !important;
+}
+
+/* Patient theme: low-saturation dark blue with readable contrast */
+.patient-theme [class*="text-violet-"] {
+  color: #93c5fd !important;
+}
+
+.patient-theme [class*="bg-violet-"] {
+  background-color: rgba(30, 58, 138, 0.45) !important;
+}
+
+.patient-theme [class*="border-violet-"] {
+  border-color: rgba(147, 197, 253, 0.35) !important;
+}
+
+.patient-theme .text-white {
+  color: #e2e8f0 !important;
+}
+
+.patient-theme input,
+.patient-theme select,
+.patient-theme textarea {
+  background-color: #0f1832 !important;
+  color: #e2e8f0 !important;
+  border-color: rgba(147, 197, 253, 0.35) !important;
+}
