@@ -71,21 +71,36 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
                 <NavLink
                   key={it.to}
                   to={it.to}
+                  end={it.to === "/patients"}
                   className={({ isActive }) =>
                     cn(
-                      "w-full flex items-center gap-3 rounded-xl px-3 py-2 transition",
-                      isActive ? "bg-violet-500/22 text-white" : "hover:bg-violet-400/12 text-slate-200"
+                      "relative w-full flex items-center gap-3 rounded-xl px-3 py-2 transition",
+                      isActive
+                        ? "bg-violet-400/26 text-white ring-1 ring-violet-300/45 shadow-[0_0_0_1px_rgba(167,139,250,0.2),0_8px_20px_rgba(76,29,149,0.35)]"
+                        : "hover:bg-violet-400/12 text-slate-200"
                     )
                   }
                   title={collapsed ? it.label : undefined}
                 >
-                  <div className="w-9 h-9 rounded-xl bg-violet-300/12 grid place-items-center">{it.icon}</div>
-                  {!collapsed && (
+                  {({ isActive }) => (
                     <>
-                      <div className="flex-1 text-left text-sm">{it.label}</div>
-                      {typeof it.badge === "number" ? (
-                        <div className="text-xs rounded-full bg-rose-500/90 px-2 py-0.5">{it.badge}</div>
-                      ) : null}
+                      {isActive && !collapsed ? <span className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-violet-300" /> : null}
+                      <div
+                        className={cn(
+                          "w-9 h-9 rounded-xl grid place-items-center transition",
+                          isActive ? "bg-violet-300/35 text-white" : "bg-violet-300/12"
+                        )}
+                      >
+                        {it.icon}
+                      </div>
+                      {!collapsed && (
+                        <>
+                          <div className={cn("flex-1 text-left text-sm", isActive ? "font-semibold" : "font-medium")}>{it.label}</div>
+                          {typeof it.badge === "number" ? (
+                            <div className="text-xs rounded-full bg-rose-500/90 px-2 py-0.5">{it.badge}</div>
+                          ) : null}
+                        </>
+                      )}
                     </>
                   )}
                 </NavLink>

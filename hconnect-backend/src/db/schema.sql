@@ -118,3 +118,21 @@ CREATE INDEX idx_doctor_patient_relations ON doctor_patient_relations("DoctorID"
 CREATE INDEX idx_appointments_doctorid ON appointments("DoctorID");
 CREATE INDEX idx_appointments_patientid ON appointments("PatientID");
 CREATE INDEX idx_patient_metric_records ON patient_metric_records("PatientID", "recorded_at");
+
+-- Additional performance indexes for current high-frequency API queries
+CREATE INDEX idx_match_requests_doctor_status_created ON doctor_patient_match_requests("DoctorID", "status", "created_at" DESC);
+CREATE INDEX idx_match_requests_patient_status_created ON doctor_patient_match_requests("PatientID", "status", "created_at" DESC);
+CREATE INDEX idx_appointments_doctor_status_created ON appointments("DoctorID", "status", "created_at" DESC);
+CREATE INDEX idx_appointments_patient_created ON appointments("PatientID", "created_at" DESC);
+CREATE INDEX idx_appointments_slot_status ON appointments("SlotID", "status");
+CREATE INDEX idx_appointment_slots_doctor_start_time ON appointment_slots("DoctorID", "start_time");
+CREATE INDEX idx_relations_doctor_status_created ON doctor_patient_relations("DoctorID", "status", "created_at" DESC);
+CREATE INDEX idx_patient_advices_doctor_created ON patient_advices("DoctorID", "created_at" DESC);
+CREATE INDEX idx_patient_advices_doctor_ack_created ON patient_advices("DoctorID", "is_acknowledged", "created_at" DESC);
+CREATE INDEX idx_patient_advices_patient_created ON patient_advices("PatientID", "created_at" DESC);
+CREATE INDEX idx_patient_advices_pending ON patient_advices("PatientID", "is_acknowledged", "created_at" DESC);
+
+-- Enforce one active appointment per slot.
+CREATE UNIQUE INDEX uniq_active_appointment_per_slot
+ON appointments("SlotID")
+WHERE "status" IN ('pending', 'confirmed');

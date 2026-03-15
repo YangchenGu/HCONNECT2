@@ -28,15 +28,27 @@ export default function PatientSidebar({ user, logout }) {
               to={item.to}
               className={({ isActive }) =>
                 cn(
-                  "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition",
+                  "relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition",
                   isActive
-                    ? "bg-blue-500/20 text-white ring-1 ring-blue-300/25"
+                    ? "bg-blue-400/28 text-white ring-1 ring-blue-200/45 shadow-[0_0_0_1px_rgba(147,197,253,0.2),0_8px_20px_rgba(30,64,175,0.35)]"
                     : "text-blue-200/90 hover:bg-blue-500/10 hover:text-white"
                 )
               }
             >
-              <span className="inline-grid h-7 w-7 place-items-center rounded-lg bg-blue-400/12 text-blue-200">{item.icon}</span>
-              <span>{item.label}</span>
+              {({ isActive }) => (
+                <>
+                  {isActive ? <span className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-blue-200" /> : null}
+                  <span
+                    className={cn(
+                      "inline-grid h-7 w-7 place-items-center rounded-lg transition",
+                      isActive ? "bg-blue-300/35 text-white" : "bg-blue-400/12 text-blue-200"
+                    )}
+                  >
+                    {item.icon}
+                  </span>
+                  <span className={cn(isActive ? "font-semibold" : "font-medium")}>{item.label}</span>
+                </>
+              )}
             </NavLink>
           ))}
         </nav>

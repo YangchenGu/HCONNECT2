@@ -208,6 +208,26 @@ async function initDbArtifacts() {
     )
   `);
 
+  // Audit trail for data mutations and sensitive operations.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      "AuditID" SERIAL PRIMARY KEY,
+      "event_type" VARCHAR(120) NOT NULL,
+      "action" VARCHAR(20) NOT NULL CHECK ("action" IN ('create', 'update', 'delete', 'upsert', 'other')),
+      "status" VARCHAR(20) NOT NULL DEFAULT 'success' CHECK ("status" IN ('success', 'failed', 'denied')),
+      "actor_user_id" INT,
+      "actor_role" VARCHAR(20),
+      "target_type" VARCHAR(80),
+      "target_id" VARCHAR(120),
+      "request_method" VARCHAR(10),
+      "request_path" TEXT,
+      "ip" VARCHAR(80),
+      "user_agent" TEXT,
+      "details" JSONB,
+      "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   await db.query(`
     CREATE INDEX IF NOT EXISTS idx_patient_advices_patient_created
     ON patient_advices ("PatientID", "created_at" DESC)
@@ -216,6 +236,100 @@ async function initDbArtifacts() {
   await db.query(`
     CREATE INDEX IF NOT EXISTS idx_patient_advices_pending
     ON patient_advices ("PatientID", "is_acknowledged", "created_at" DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created
+    ON audit_logs ("created_at" DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_created
+    ON audit_logs ("actor_user_id", "created_at" DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_event_created
+    ON audit_logs ("event_type", "created_at" DESC)
+  `);
+
+  // Match request read paths (doctor + patient notifications/list pages).
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_match_requests_doctor_status_created
+    ON doctor_patient_match_requests ("DoctorID", "status", "created_at" DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_match_requests_patient_status_created
+    ON doctor_patient_match_requests ("PatientID", "status", "created_at" DESC)
+  `);
+
+  // Appointment read paths (notifications, dashboard, appointments list).
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_appointments_doctor_status_created
+    ON appointments ("DoctorID", "status", "created_at" DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_appointments_patient_created
+    ON appointments ("PatientID", "created_at" DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_appointments_slot_status
+    ON appointments ("SlotID", "status")
+  `);
+
+  // Slot lookup paths.
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_appointment_slots_doctor_start_time
+    ON appointment_slots ("DoctorID", "start_time")
+  `);
+
+  // Relation list/count paths.
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_relations_doctor_status_created
+    ON doctor_patient_relations ("DoctorID", "status", "created_at" DESC)
+  `);
+
+  // Advice lookup paths from doctor dashboard/details.
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_patient_advices_doctor_created
+    ON patient_advices ("DoctorID", "created_at" DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_patient_advices_doctor_ack_created
+    ON patient_advices ("DoctorID", "is_acknowledged", "created_at" DESC)
+  `);
+
+  // Metrics reporting/history paths.
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_patient_metric_records_patient_recorded
+    ON patient_metric_records ("PatientID", "recorded_at" DESC)
+  `);
+
+  // Enforce one active appointment per slot when data is clean.
+  // If historical duplicates exist, this block skips index creation instead of failing startup.
+  await db.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'uniq_active_appointment_per_slot'
+      ) THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM appointments
+          GROUP BY "SlotID"
+          HAVING COUNT(*) FILTER (WHERE "status" IN ('pending', 'confirmed')) > 1
+        ) THEN
+          EXECUTE 'CREATE UNIQUE INDEX uniq_active_appointment_per_slot ON appointments ("SlotID") WHERE "status" IN (''pending'', ''confirmed'')';
+        END IF;
+      END IF;
+    END
+    $$;
   `);
 }
 
@@ -374,6 +488,83 @@ function requireRole(role) {
       res.status(500).json({ error: "Role check failed" });
     }
   };
+}
+
+function toAuditSafeJson(value) {
+  try {
+    return value === undefined ? null : JSON.parse(JSON.stringify(value));
+  } catch {
+    return { note: "unserializable_details" };
+  }
+}
+
+async function resolveAuditActor(req) {
+  if (req.currentUser) {
+    return {
+      userId: req.currentUser.UserID || null,
+      role: req.currentUser.role || null,
+    };
+  }
+
+  if (req._cachedAuditActor) return req._cachedAuditActor;
+
+  const sub = req.auth?.payload?.sub;
+  if (!sub) {
+    const anonymous = { userId: null, role: null };
+    req._cachedAuditActor = anonymous;
+    return anonymous;
+  }
+
+  const row = await getUserBySub(sub).catch(() => null);
+  const resolved = {
+    userId: row?.UserID || null,
+    role: row?.role || null,
+  };
+  req._cachedAuditActor = resolved;
+  return resolved;
+}
+
+async function writeAuditEvent({
+  client,
+  req,
+  eventType,
+  action,
+  status = "success",
+  targetType = null,
+  targetId = null,
+  actorUserId = null,
+  actorRole = null,
+  details = null,
+}) {
+  try {
+    const actor = await resolveAuditActor(req || {});
+    const resolvedActorUserId = actorUserId ?? actor.userId ?? null;
+    const resolvedActorRole = actorRole ?? actor.role ?? null;
+    const executor = client || db;
+
+    await executor.query(
+      `INSERT INTO audit_logs (
+          "event_type", "action", "status", "actor_user_id", "actor_role", "target_type", "target_id",
+          "request_method", "request_path", "ip", "user_agent", "details"
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
+      [
+        String(eventType || "unknown_event").slice(0, 120),
+        ["create", "update", "delete", "upsert", "other"].includes(action) ? action : "other",
+        ["success", "failed", "denied"].includes(status) ? status : "failed",
+        resolvedActorUserId,
+        resolvedActorRole ? String(resolvedActorRole).slice(0, 20) : null,
+        targetType ? String(targetType).slice(0, 80) : null,
+        targetId === null || targetId === undefined ? null : String(targetId).slice(0, 120),
+        req?.method || null,
+        req?.path || req?.originalUrl || null,
+        req?.ip || null,
+        req?.headers?.["user-agent"] || null,
+        JSON.stringify(toAuditSafeJson(details)),
+      ]
+    );
+  } catch (error) {
+    console.warn("audit log write failed:", error.message || error);
+  }
 }
 
 // helper to send sms and store code
@@ -686,9 +877,32 @@ app.post("/internal/create-auth0-user", async (req, res) => {
       console.warn("Could not write local user/profile after creating Auth0 user:", dbErr.message);
     }
 
+    await writeAuditEvent({
+      req,
+      eventType: "auth.doctor_account_created_internal",
+      action: "create",
+      status: "success",
+      targetType: "auth0_user",
+      targetId: created.user_id,
+      details: {
+        email,
+        providerId,
+      },
+    });
+
     res.json({ success: true, auth0User: created });
   } catch (error) {
     console.error("/internal/create-auth0-user error:", error.response?.data || error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "auth.doctor_account_created_internal",
+      action: "create",
+      status: "failed",
+      targetType: "auth0_user",
+      details: {
+        error: getReadableAuth0Error(error, error.message || "Failed to create account"),
+      },
+    });
     const status = error.response?.status || 500;
     const message = getReadableAuth0Error(error, error.message || "Failed to create account");
     res.status(status).json({ error: message });
@@ -832,9 +1046,36 @@ app.post("/api/register", checkJwt, async (req, res) => {
         await ensurePatientProfileByUserId(userId);
       }
 
+      await writeAuditEvent({
+        req,
+        eventType: "user.role_registered",
+        action: "upsert",
+        status: "success",
+        targetType: "user",
+        targetId: userId,
+        details: {
+          auth0_id,
+          email,
+          role,
+        },
+      });
+
       console.log(`✅ User registered in database: ${email} as ${role}`);
     } catch (dbError) {
       console.warn(`⚠️ Database unavailable, using fallback: ${dbError.message}`);
+      await writeAuditEvent({
+        req,
+        eventType: "user.role_registered",
+        action: "upsert",
+        status: "failed",
+        targetType: "user",
+        details: {
+          auth0_id,
+          email,
+          role,
+          error: dbError.message || String(dbError),
+        },
+      });
       // if database unavailable, still allow registration (frontend stores role in localStorage)
     }
 
@@ -896,9 +1137,34 @@ app.post("/public/register-patient", async (req, res) => {
       const userId = userWrite.rows[0]?.UserID;
       if (userId) {
         await ensurePatientProfileByUserId(userId);
+
+        await writeAuditEvent({
+          req,
+          eventType: "auth.patient_registered_public",
+          action: "create",
+          status: "success",
+          targetType: "user",
+          targetId: userId,
+          details: {
+            email,
+            auth0UserId: created.user_id,
+          },
+        });
       }
     } catch (dbErr) {
       console.warn("Could not write local patient row after Auth0 creation:", dbErr.message);
+      await writeAuditEvent({
+        req,
+        eventType: "auth.patient_registered_public",
+        action: "create",
+        status: "failed",
+        targetType: "auth0_user",
+        targetId: created.user_id,
+        details: {
+          email,
+          error: dbErr.message || String(dbErr),
+        },
+      });
     }
 
     return res.json({ success: true, message: "Patient account created", auth0UserId: created.user_id });
@@ -936,6 +1202,17 @@ app.delete("/api/account", checkJwt, async (req, res) => {
     }
   } catch (error) {
     await client.query("ROLLBACK");
+    await writeAuditEvent({
+      req,
+      eventType: "account.deleted",
+      action: "delete",
+      status: "failed",
+      targetType: "user",
+      details: {
+        auth0Sub: sub,
+        error: error.message || String(error),
+      },
+    });
     console.error("/api/account db delete error:", error.message || error);
     return res.status(500).json({ error: "Failed to delete account data from database" });
   } finally {
@@ -952,6 +1229,23 @@ app.delete("/api/account", checkJwt, async (req, res) => {
   } catch (error) {
     console.warn("/api/account Auth0 delete warning:", error.response?.data || error.message || error);
   }
+
+  await writeAuditEvent({
+    req,
+    eventType: "account.deleted",
+    action: "delete",
+    status: deletedDb ? "success" : "failed",
+    actorUserId: deletedUser?.UserID || null,
+    actorRole: deletedUser?.role || null,
+    targetType: "user",
+    targetId: deletedUser?.UserID || sub,
+    details: {
+      auth0Sub: sub,
+      deletedDb,
+      deletedAuth0,
+      deletedUser,
+    },
+  });
 
   return res.json({
     success: true,
@@ -1059,6 +1353,20 @@ app.post("/api/doctor/match-requests", checkJwt, requireRole("doctor"), async (r
       [doctorProfile.DoctorID, patientProfile.PatientID, message || null]
     );
 
+    await writeAuditEvent({
+      req,
+      eventType: "relation.match_request_created",
+      action: "create",
+      status: "success",
+      targetType: "match_request",
+      targetId: inserted.rows[0]?.RequestID,
+      details: {
+        doctorId: doctorProfile.DoctorID,
+        patientId: patientProfile.PatientID,
+        patientEmail,
+      },
+    });
+
     return res.json({
       success: true,
       request: inserted.rows[0],
@@ -1066,6 +1374,16 @@ app.post("/api/doctor/match-requests", checkJwt, requireRole("doctor"), async (r
     });
   } catch (error) {
     console.error("/api/doctor/match-requests POST error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "relation.match_request_created",
+      action: "create",
+      status: "failed",
+      targetType: "match_request",
+      details: {
+        error: error.message || String(error),
+      },
+    });
     return res.status(500).json({ error: "Failed to create match request" });
   }
 });
@@ -1101,6 +1419,58 @@ app.get("/api/doctor/match-requests", checkJwt, requireRole("doctor"), async (re
   } catch (error) {
     console.error("/api/doctor/match-requests GET error:", error.message || error);
     return res.status(500).json({ error: "Failed to load match requests" });
+  }
+});
+
+// Doctor: unlink one patient relationship.
+app.delete("/api/doctor/patients/:patientId/relation", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const patientId = Number(req.params.patientId);
+    if (!Number.isInteger(patientId) || patientId <= 0) {
+      return res.status(400).json({ error: "Invalid patientId" });
+    }
+
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+
+    const removed = await db.query(
+      `DELETE FROM doctor_patient_relations
+       WHERE "DoctorID"=$1 AND "PatientID"=$2
+       RETURNING "RelationID"`,
+      [doctorProfile.DoctorID, patientId]
+    );
+
+    if (!removed.rows.length) {
+      return res.status(404).json({ error: "Active relationship not found" });
+    }
+
+    await writeAuditEvent({
+      req,
+      eventType: "relation.unlinked_by_doctor",
+      action: "delete",
+      status: "success",
+      targetType: "doctor_patient_relation",
+      targetId: removed.rows[0].RelationID,
+      details: {
+        doctorId: doctorProfile.DoctorID,
+        patientId,
+      },
+    });
+
+    return res.json({ success: true, removedRelationId: removed.rows[0].RelationID });
+  } catch (error) {
+    console.error("/api/doctor/patients/:patientId/relation DELETE error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "relation.unlinked_by_doctor",
+      action: "delete",
+      status: "failed",
+      targetType: "doctor_patient_relation",
+      details: {
+        patientId: req.params?.patientId || null,
+        error: error.message || String(error),
+      },
+    });
+    return res.status(500).json({ error: "Failed to remove patient relationship" });
   }
 });
 
@@ -1184,11 +1554,38 @@ app.post("/api/patient/match-requests/:requestId/respond", checkJwt, requireRole
       [action === "accept" ? "accepted" : "rejected", requestId]
     );
 
+    await writeAuditEvent({
+      client,
+      req,
+      eventType: "relation.match_request_responded",
+      action: "update",
+      status: "success",
+      targetType: "match_request",
+      targetId: requestId,
+      details: {
+        action,
+        doctorId: reqRow.DoctorID,
+        patientId: reqRow.PatientID,
+      },
+    });
+
     await client.query("COMMIT");
     return res.json({ success: true, action });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("/api/patient/match-requests/:id/respond error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "relation.match_request_responded",
+      action: "update",
+      status: "failed",
+      targetType: "match_request",
+      targetId: requestId,
+      details: {
+        action,
+        error: error.message || String(error),
+      },
+    });
     return res.status(500).json({ error: "Failed to respond to request" });
   } finally {
     client.release();
@@ -1337,6 +1734,21 @@ app.post("/api/patient/reports", checkJwt, requireRole("patient"), async (req, r
       insertedCount += 1;
     }
 
+    await writeAuditEvent({
+      client,
+      req,
+      eventType: "patient.report_submitted",
+      action: isUpdate ? "update" : "create",
+      status: "success",
+      targetType: "patient_daily_report",
+      targetId: patientProfile.PatientID,
+      details: {
+        mode: isUpdate ? "updated" : "created",
+        insertedCount,
+        recordedAt: effectiveRecordedAt.toISOString(),
+      },
+    });
+
     await client.query("COMMIT");
     return res.json({
       success: true,
@@ -1347,6 +1759,16 @@ app.post("/api/patient/reports", checkJwt, requireRole("patient"), async (req, r
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("/api/patient/reports POST error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "patient.report_submitted",
+      action: "upsert",
+      status: "failed",
+      targetType: "patient_daily_report",
+      details: {
+        error: error.message || String(error),
+      },
+    });
     return res.status(500).json({ error: "Failed to submit patient report" });
   } finally {
     client.release();
@@ -1507,6 +1929,106 @@ app.get("/api/patient/reports/paged", checkJwt, requireRole("patient"), async (r
   } catch (error) {
     console.error("/api/patient/reports/paged GET error:", error.message || error);
     return res.status(500).json({ error: "Failed to load paginated patient reports" });
+  }
+});
+
+// Patient profile: read editable demographic fields from patient_profiles.
+app.get("/api/patient/profile", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+    const profile = await db.query(
+      `SELECT
+          pp."PatientID" AS patient_id,
+          pp."height_cm",
+          pp."weight_kg",
+          pp."blood_type",
+          pp."address",
+          pp."emergency_contact",
+          u."name" AS display_name,
+          u."email" AS email
+       FROM patient_profiles pp
+       JOIN users u ON u."UserID"=pp."UserID"
+       WHERE pp."PatientID"=$1
+       LIMIT 1`,
+      [patientProfile.PatientID]
+    );
+
+    if (!profile.rows.length) {
+      return res.status(404).json({ error: "Patient profile not found" });
+    }
+
+    return res.json({ profile: profile.rows[0] });
+  } catch (error) {
+    console.error("/api/patient/profile GET error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load patient profile" });
+  }
+});
+
+// Patient profile: update editable demographic fields in patient_profiles.
+app.put("/api/patient/profile", checkJwt, requireRole("patient"), async (req, res) => {
+  try {
+    const patientProfile = await ensurePatientProfileByUserId(req.currentUser.UserID);
+
+    const parseOptionalDecimal = (value) => {
+      if (value === undefined || value === null || value === "") return null;
+      const next = Number(value);
+      return Number.isFinite(next) ? next : NaN;
+    };
+
+    const heightCm = parseOptionalDecimal(req.body?.heightCm);
+    const weightKg = parseOptionalDecimal(req.body?.weightKg);
+    if (Number.isNaN(heightCm) || Number.isNaN(weightKg)) {
+      return res.status(400).json({ error: "heightCm and weightKg must be valid numbers" });
+    }
+
+    const bloodTypeRaw = String(req.body?.bloodType || "").trim();
+    const bloodType = bloodTypeRaw ? bloodTypeRaw.toUpperCase().slice(0, 10) : null;
+    const address = String(req.body?.address || "").trim().slice(0, 1000) || null;
+    const emergencyContact = String(req.body?.emergencyContact || "").trim().slice(0, 255) || null;
+
+    const updated = await db.query(
+      `UPDATE patient_profiles
+       SET
+         "height_cm"=$1,
+         "weight_kg"=$2,
+         "blood_type"=$3,
+         "address"=$4,
+         "emergency_contact"=$5
+       WHERE "PatientID"=$6
+       RETURNING "PatientID" AS patient_id, "height_cm", "weight_kg", "blood_type", "address", "emergency_contact"`,
+      [heightCm, weightKg, bloodType, address, emergencyContact, patientProfile.PatientID]
+    );
+
+    await writeAuditEvent({
+      req,
+      eventType: "patient.profile_updated",
+      action: "update",
+      status: "success",
+      targetType: "patient_profile",
+      targetId: patientProfile.PatientID,
+      details: {
+        heightCm,
+        weightKg,
+        bloodType,
+        address,
+        emergencyContact,
+      },
+    });
+
+    return res.json({ success: true, profile: updated.rows[0] });
+  } catch (error) {
+    console.error("/api/patient/profile PUT error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "patient.profile_updated",
+      action: "update",
+      status: "failed",
+      targetType: "patient_profile",
+      details: {
+        error: error.message || String(error),
+      },
+    });
+    return res.status(500).json({ error: "Failed to update patient profile" });
   }
 });
 
@@ -1735,9 +2257,34 @@ app.post("/api/doctor/patients/:patientId/advices", checkJwt, requireRole("docto
       [doctorProfile.DoctorID, patientId, content, urgency]
     );
 
+    await writeAuditEvent({
+      req,
+      eventType: "doctor.advice_created",
+      action: "create",
+      status: "success",
+      targetType: "patient_advice",
+      targetId: inserted.rows[0]?.AdviceID,
+      details: {
+        doctorId: doctorProfile.DoctorID,
+        patientId,
+        urgency,
+      },
+    });
+
     return res.json({ success: true, advice: inserted.rows[0] });
   } catch (error) {
     console.error("/api/doctor/patients/:patientId/advices POST error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "doctor.advice_created",
+      action: "create",
+      status: "failed",
+      targetType: "patient_advice",
+      targetId: req.params?.patientId || null,
+      details: {
+        error: error.message || String(error),
+      },
+    });
     return res.status(500).json({ error: "Failed to create patient advice" });
   }
 });
@@ -1876,9 +2423,32 @@ app.post("/api/patient/advices/:adviceId/acknowledge", checkJwt, requireRole("pa
       return res.status(404).json({ error: "Advice not found" });
     }
 
+    await writeAuditEvent({
+      req,
+      eventType: "patient.advice_acknowledged",
+      action: "update",
+      status: "success",
+      targetType: "patient_advice",
+      targetId: adviceId,
+      details: {
+        patientId: patientProfile.PatientID,
+      },
+    });
+
     return res.json({ success: true, advice: updated.rows[0] });
   } catch (error) {
     console.error("/api/patient/advices/:adviceId/acknowledge POST error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "patient.advice_acknowledged",
+      action: "update",
+      status: "failed",
+      targetType: "patient_advice",
+      targetId: req.params?.adviceId || null,
+      details: {
+        error: error.message || String(error),
+      },
+    });
     return res.status(500).json({ error: "Failed to acknowledge advice" });
   }
 });
@@ -1989,11 +2559,38 @@ app.post("/api/patient/appointments", checkJwt, requireRole("patient"), async (r
 
     await client.query(`UPDATE appointment_slots SET "is_booked"=TRUE WHERE "SlotID"=$1`, [slotId]);
 
+    await writeAuditEvent({
+      client,
+      req,
+      eventType: "appointment.request_created",
+      action: "create",
+      status: "success",
+      targetType: "appointment",
+      targetId: created.rows[0]?.AppointmentID,
+      details: {
+        doctorId,
+        patientId: patientProfile.PatientID,
+        slotId,
+      },
+    });
+
     await client.query("COMMIT");
     return res.json({ success: true, appointment: created.rows[0] });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("/api/patient/appointments POST error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "appointment.request_created",
+      action: "create",
+      status: "failed",
+      targetType: "appointment",
+      details: {
+        doctorId,
+        slotId,
+        error: error.message || String(error),
+      },
+    });
     return res.status(500).json({ error: "Failed to create appointment request" });
   } finally {
     client.release();
@@ -2085,6 +2682,101 @@ app.get("/api/doctor/notifications", checkJwt, requireRole("doctor"), async (req
   } catch (error) {
     console.error("/api/doctor/notifications error:", error.message || error);
     return res.status(500).json({ error: "Failed to load doctor notifications" });
+  }
+});
+
+// Doctor dashboard: core overview cards and lists for today's workflow.
+app.get("/api/doctor/dashboard", checkJwt, requireRole("doctor"), async (req, res) => {
+  try {
+    const doctorProfile = await ensureDoctorProfileByUser(req.currentUser, req.ip);
+
+    const [
+      linkedPatientsTotalRes,
+      pendingAppointmentRequestsRes,
+      pendingMatchRequestsRes,
+      pendingAdviceReceiptsRes,
+      upcomingAppointmentsRes,
+      recentAdvicesRes,
+    ] = await Promise.all([
+      db.query(
+        `SELECT COUNT(*)::int AS total
+         FROM doctor_patient_relations
+         WHERE "DoctorID"=$1 AND LOWER("status"::text)='active'`,
+        [doctorProfile.DoctorID]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS total
+         FROM appointments
+         WHERE "DoctorID"=$1 AND "status"='pending'`,
+        [doctorProfile.DoctorID]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS total
+         FROM doctor_patient_match_requests
+         WHERE "DoctorID"=$1 AND "status"='pending'`,
+        [doctorProfile.DoctorID]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS total
+         FROM patient_advices
+         WHERE "DoctorID"=$1 AND "is_acknowledged"=FALSE`,
+        [doctorProfile.DoctorID]
+      ),
+      db.query(
+        `SELECT
+            a."AppointmentID",
+            a."status",
+            a."reason",
+            s."start_time",
+            s."end_time",
+            pu."name" AS patient_name,
+            pu."email" AS patient_email
+         FROM appointments a
+         JOIN appointment_slots s ON s."SlotID"=a."SlotID"
+         JOIN patient_profiles pp ON pp."PatientID"=a."PatientID"
+         JOIN users pu ON pu."UserID"=pp."UserID"
+         WHERE a."DoctorID"=$1
+           AND a."status" IN ('pending', 'confirmed')
+           AND s."start_time" >= NOW()
+         ORDER BY s."start_time" ASC
+         LIMIT 8`,
+        [doctorProfile.DoctorID]
+      ),
+      db.query(
+        `SELECT
+            a."AdviceID",
+            a."content",
+            a."urgency",
+            a."is_acknowledged",
+            a."acknowledged_at",
+            a."created_at",
+            pu."name" AS patient_name,
+            pu."email" AS patient_email
+         FROM patient_advices a
+         JOIN patient_profiles pp ON pp."PatientID"=a."PatientID"
+         JOIN users pu ON pu."UserID"=pp."UserID"
+         WHERE a."DoctorID"=$1
+         ORDER BY a."created_at" DESC
+         LIMIT 5`,
+        [doctorProfile.DoctorID]
+      ),
+    ]);
+
+    const pending = {
+      appointmentRequests: pendingAppointmentRequestsRes.rows[0]?.total || 0,
+      matchRequests: pendingMatchRequestsRes.rows[0]?.total || 0,
+      adviceReceipts: pendingAdviceReceiptsRes.rows[0]?.total || 0,
+    };
+
+    return res.json({
+      linkedPatientsTotal: linkedPatientsTotalRes.rows[0]?.total || 0,
+      pending,
+      upcomingAppointments: upcomingAppointmentsRes.rows,
+      recentAdvices: recentAdvicesRes.rows,
+    });
+  } catch (error) {
+    console.error("/api/doctor/dashboard error:", error.message || error);
+    return res.status(500).json({ error: "Failed to load doctor dashboard" });
   }
 });
 
@@ -2233,11 +2925,38 @@ app.post("/api/doctor/appointment-slots/save-day", checkJwt, requireRole("doctor
       savedCount += 1;
     }
 
+    await writeAuditEvent({
+      client,
+      req,
+      eventType: "appointment.slots_saved_day",
+      action: "upsert",
+      status: "success",
+      targetType: "appointment_slot_availability",
+      targetId: dateStr,
+      details: {
+        doctorId: doctorProfile.DoctorID,
+        date: dateStr,
+        savedCount,
+        lockedSlotIds,
+      },
+    });
+
     await client.query("COMMIT");
     return res.json({ success: true, savedCount, lockedSlotIds });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("/api/doctor/appointment-slots/save-day error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "appointment.slots_saved_day",
+      action: "upsert",
+      status: "failed",
+      targetType: "appointment_slot_availability",
+      targetId: dateStr || null,
+      details: {
+        error: error.message || String(error),
+      },
+    });
     return res.status(500).json({ error: "Failed to save slot availability" });
   } finally {
     client.release();
@@ -2289,11 +3008,39 @@ app.post("/api/doctor/appointments/:appointmentId/respond", checkJwt, requireRol
       await client.query(`UPDATE appointment_slots SET "is_booked"=FALSE WHERE "SlotID"=$1`, [appt.SlotID]);
     }
 
+    await writeAuditEvent({
+      client,
+      req,
+      eventType: "appointment.request_responded",
+      action: "update",
+      status: "success",
+      targetType: "appointment",
+      targetId: appointmentId,
+      details: {
+        doctorId: doctorProfile.DoctorID,
+        action,
+        nextStatus,
+        slotId: appt.SlotID,
+      },
+    });
+
     await client.query("COMMIT");
     return res.json({ success: true, status: nextStatus });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("/api/doctor/appointments/:id/respond error:", error.message || error);
+    await writeAuditEvent({
+      req,
+      eventType: "appointment.request_responded",
+      action: "update",
+      status: "failed",
+      targetType: "appointment",
+      targetId: appointmentId,
+      details: {
+        action,
+        error: error.message || String(error),
+      },
+    });
     return res.status(500).json({ error: "Failed to respond to appointment" });
   } finally {
     client.release();

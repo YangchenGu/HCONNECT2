@@ -9,6 +9,11 @@ const APP_ORIGIN =
 export default function PatientAccount() {
   const { user, getAccessTokenSilently, logout } = useAuth0();
   const [name, setName] = useState(user?.name || "");
+  const [heightCm, setHeightCm] = useState("");
+  const [weightKg, setWeightKg] = useState("");
+  const [bloodType, setBloodType] = useState("");
+  const [address, setAddress] = useState("");
+  const [emergencyContact, setEmergencyContact] = useState("");
   const [emailPref, setEmailPref] = useState(true);
   const [smsPref, setSmsPref] = useState(false);
   const [msg, setMsg] = useState("");
@@ -16,9 +21,8 @@ export default function PatientAccount() {
   const [dangerLoading, setDangerLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [savedSnapshot, setSavedSnapshot] = useState(null);
-  const [incomingRequests, setIncomingRequests] = useState([]);
-  const [requestLoading, setRequestLoading] = useState(false);
-  const [requestBusyId, setRequestBusyId] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const bloodTypeOptions = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 
   useEffect(() => {
     const key = `patient_account_${user?.sub || "guest"}`;
@@ -26,10 +30,20 @@ export default function PatientAccount() {
     if (!raw) {
       const snapshot = {
         name: user?.name || "",
+        heightCm: "",
+        weightKg: "",
+        bloodType: "",
+        address: "",
+        emergencyContact: "",
         emailPref: true,
         smsPref: false,
       };
       setName(snapshot.name);
+      setHeightCm(snapshot.heightCm);
+      setWeightKg(snapshot.weightKg);
+      setBloodType(snapshot.bloodType);
+      setAddress(snapshot.address);
+      setEmergencyContact(snapshot.emergencyContact);
       setEmailPref(snapshot.emailPref);
       setSmsPref(snapshot.smsPref);
       setSavedSnapshot(snapshot);
@@ -40,61 +54,114 @@ export default function PatientAccount() {
       const parsed = JSON.parse(raw);
       const snapshot = {
         name: parsed.name || user?.name || "",
+        heightCm: String(parsed.heightCm || ""),
+        weightKg: String(parsed.weightKg || ""),
+        bloodType: parsed.bloodType || "",
+        address: parsed.address || "",
+        emergencyContact: parsed.emergencyContact || "",
         emailPref: Boolean(parsed.emailPref),
         smsPref: Boolean(parsed.smsPref),
       };
       setName(snapshot.name);
+      setHeightCm(snapshot.heightCm);
+      setWeightKg(snapshot.weightKg);
+      setBloodType(snapshot.bloodType);
+      setAddress(snapshot.address);
+      setEmergencyContact(snapshot.emergencyContact);
       setEmailPref(snapshot.emailPref);
       setSmsPref(snapshot.smsPref);
       setSavedSnapshot(snapshot);
     } catch {
       const snapshot = {
         name: user?.name || "",
+        heightCm: "",
+        weightKg: "",
+        bloodType: "",
+        address: "",
+        emergencyContact: "",
         emailPref: true,
         smsPref: false,
       };
       setName(snapshot.name);
+      setHeightCm(snapshot.heightCm);
+      setWeightKg(snapshot.weightKg);
+      setBloodType(snapshot.bloodType);
+      setAddress(snapshot.address);
+      setEmergencyContact(snapshot.emergencyContact);
       setEmailPref(snapshot.emailPref);
       setSmsPref(snapshot.smsPref);
       setSavedSnapshot(snapshot);
     }
   }, [user?.name, user?.sub]);
 
-  async function loadMatchRequests() {
-    setRequestLoading(true);
-    try {
-      const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
-      const res = await fetch(apiUrl("/api/patient/match-requests"), {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(payload.error || "Failed to load match requests");
-      }
-      setIncomingRequests(payload.requests || []);
-    } catch (error) {
-      setMsgType("error");
-      setMsg(error.message || "Failed to load match requests");
-    } finally {
-      setRequestLoading(false);
-    }
-  }
-
   useEffect(() => {
     if (!user?.sub) return;
-    loadMatchRequests();
+
+    async function loadPatientProfile() {
+      setProfileLoading(true);
+      try {
+        const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+        const res = await fetch(apiUrl("/api/patient/profile"), {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(payload.error || "Failed to load patient profile");
+        }
+
+        const profile = payload.profile || {};
+        const snapshot = {
+          name: profile.display_name || user?.name || "",
+          heightCm: profile.height_cm === null || profile.height_cm === undefined ? "" : String(profile.height_cm),
+          weightKg: profile.weight_kg === null || profile.weight_kg === undefined ? "" : String(profile.weight_kg),
+          bloodType: profile.blood_type || "",
+          address: profile.address || "",
+          emergencyContact: profile.emergency_contact || "",
+          emailPref,
+          smsPref,
+        };
+
+        setName(snapshot.name);
+        setHeightCm(snapshot.heightCm);
+        setWeightKg(snapshot.weightKg);
+        setBloodType(snapshot.bloodType);
+        setAddress(snapshot.address);
+        setEmergencyContact(snapshot.emergencyContact);
+        setSavedSnapshot((prev) => ({
+          ...(prev || {}),
+          ...snapshot,
+        }));
+
+        localStorage.setItem(`patient_account_${user?.sub || "guest"}`, JSON.stringify({
+          ...(savedSnapshot || {}),
+          ...snapshot,
+        }));
+      } catch (error) {
+        setMsgType("error");
+        setMsg(error.message || "Failed to load patient profile");
+      } finally {
+        setProfileLoading(false);
+      }
+    }
+
+    loadPatientProfile();
   }, [user?.sub]);
 
   const isDirty = useMemo(() => {
     if (!savedSnapshot) return false;
     return (
       name.trim() !== savedSnapshot.name ||
+      String(heightCm).trim() !== String(savedSnapshot.heightCm || "") ||
+      String(weightKg).trim() !== String(savedSnapshot.weightKg || "") ||
+      String(bloodType).trim() !== String(savedSnapshot.bloodType || "") ||
+      String(address).trim() !== String(savedSnapshot.address || "") ||
+      String(emergencyContact).trim() !== String(savedSnapshot.emergencyContact || "") ||
       emailPref !== savedSnapshot.emailPref ||
       smsPref !== savedSnapshot.smsPref
     );
-  }, [name, emailPref, smsPref, savedSnapshot]);
+  }, [name, heightCm, weightKg, bloodType, address, emergencyContact, emailPref, smsPref, savedSnapshot]);
 
   const canSave = useMemo(() => isEditing && name.trim().length >= 2 && isDirty, [isEditing, name, isDirty]);
 
@@ -132,19 +199,58 @@ export default function PatientAccount() {
     };
   }, [isEditing, isDirty]);
 
-  function save(e) {
+  async function save(e) {
     e.preventDefault();
     if (!canSave) return;
-    const snapshot = { name: name.trim(), emailPref, smsPref };
-    localStorage.setItem(
-      `patient_account_${user?.sub || "guest"}`,
-      JSON.stringify(snapshot)
-    );
-    setSavedSnapshot(snapshot);
-    setIsEditing(false);
-    setMsgType("success");
-    setMsg("Account preferences saved.");
-    setTimeout(() => setMsg(""), 2200);
+    try {
+      const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+      const res = await fetch(apiUrl("/api/patient/profile"), {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          heightCm: heightCm.trim(),
+          weightKg: weightKg.trim(),
+          bloodType: bloodType.trim(),
+          address: address.trim(),
+          emergencyContact: emergencyContact.trim(),
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error || "Failed to save profile");
+      }
+
+      const profile = payload.profile || {};
+      const snapshot = {
+        name: name.trim(),
+        heightCm: profile.height_cm === null || profile.height_cm === undefined ? "" : String(profile.height_cm),
+        weightKg: profile.weight_kg === null || profile.weight_kg === undefined ? "" : String(profile.weight_kg),
+        bloodType: profile.blood_type || "",
+        address: profile.address || "",
+        emergencyContact: profile.emergency_contact || "",
+        emailPref,
+        smsPref,
+      };
+
+      setName(snapshot.name);
+      setHeightCm(snapshot.heightCm);
+      setWeightKg(snapshot.weightKg);
+      setBloodType(snapshot.bloodType);
+      setAddress(snapshot.address);
+      setEmergencyContact(snapshot.emergencyContact);
+      localStorage.setItem(`patient_account_${user?.sub || "guest"}`, JSON.stringify(snapshot));
+      setSavedSnapshot(snapshot);
+      setIsEditing(false);
+      setMsgType("success");
+      setMsg("Account profile saved.");
+      setTimeout(() => setMsg(""), 2200);
+    } catch (error) {
+      setMsgType("error");
+      setMsg(error.message || "Failed to save profile");
+    }
   }
 
   function cancelEditing() {
@@ -154,6 +260,11 @@ export default function PatientAccount() {
     }
     if (savedSnapshot) {
       setName(savedSnapshot.name);
+      setHeightCm(savedSnapshot.heightCm || "");
+      setWeightKg(savedSnapshot.weightKg || "");
+      setBloodType(savedSnapshot.bloodType || "");
+      setAddress(savedSnapshot.address || "");
+      setEmergencyContact(savedSnapshot.emergencyContact || "");
       setEmailPref(savedSnapshot.emailPref);
       setSmsPref(savedSnapshot.smsPref);
     }
@@ -199,91 +310,10 @@ export default function PatientAccount() {
     }
   }
 
-  async function respondToRequest(requestId, action) {
-    setRequestBusyId(requestId);
-    setMsg("");
-    try {
-      const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
-      const res = await fetch(apiUrl(`/api/patient/match-requests/${requestId}/respond`), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ action }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(payload.error || "Failed to respond to request");
-      }
-      setMsgType("success");
-      setMsg(action === "accept" ? "Doctor matched successfully." : "Request rejected.");
-      await loadMatchRequests();
-    } catch (error) {
-      setMsgType("error");
-      setMsg(error.message || "Failed to respond to request");
-    } finally {
-      setRequestBusyId(null);
-    }
-  }
-
   return (
     <div className="p-6 text-violet-100">
       <form onSubmit={save} className="max-w-2xl rounded-2xl border border-violet-300/15 bg-violet-900/30 p-5 space-y-4">
         <h2 className="text-base font-semibold text-white">Account settings</h2>
-
-        <div className="rounded-xl border border-blue-300/25 bg-[#0f1f3f] p-3">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-xs text-blue-200/90">Pending doctor match requests</div>
-            <button
-              type="button"
-              onClick={loadMatchRequests}
-              disabled={requestLoading || Boolean(requestBusyId)}
-              className="rounded-lg border border-blue-300/30 bg-blue-900/30 px-2 py-1 text-[11px] text-blue-100 hover:bg-blue-800/50 disabled:opacity-50"
-            >
-              Refresh
-            </button>
-          </div>
-
-          {incomingRequests.length ? (
-            <div className="space-y-2">
-              {incomingRequests.map((request) => {
-                const busy = requestBusyId === request.RequestID;
-                return (
-                  <div key={request.RequestID} className="rounded-lg border border-blue-300/20 bg-[#13264d] px-3 py-2">
-                    <div className="text-sm text-blue-100 font-medium">{request.doctor_name || "Doctor"}</div>
-                    <div className="text-xs text-blue-300/90 break-all">{request.doctor_email}</div>
-                    {request.message ? (
-                      <div className="mt-1 text-xs text-blue-200/85">Message: {request.message}</div>
-                    ) : null}
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => respondToRequest(request.RequestID, "accept")}
-                        className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs px-3 py-1.5"
-                      >
-                        {busy ? "Working..." : "Accept"}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => respondToRequest(request.RequestID, "reject")}
-                        className="rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs px-3 py-1.5"
-                      >
-                        {busy ? "Working..." : "Reject"}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-xs text-blue-200/80">
-              {requestLoading ? "Loading requests..." : "No pending requests."}
-            </div>
-          )}
-        </div>
 
         <div className="flex gap-2">
           {!isEditing ? (
@@ -341,6 +371,77 @@ export default function PatientAccount() {
           />
         </label>
 
+        <div className="rounded-xl border border-violet-300/20 bg-[#1a1335] p-3 space-y-3">
+          <div className="text-xs text-violet-300">Medical profile</div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-xs text-violet-300 mb-1">Height (cm)</div>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={heightCm}
+                onChange={(e) => setHeightCm(e.target.value)}
+                disabled={!isEditing}
+                className="w-full rounded-lg border border-violet-300/20 bg-[#130f2d] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
+              />
+            </label>
+
+            <label className="block">
+              <div className="text-xs text-violet-300 mb-1">Weight (kg)</div>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={weightKg}
+                onChange={(e) => setWeightKg(e.target.value)}
+                disabled={!isEditing}
+                className="w-full rounded-lg border border-violet-300/20 bg-[#130f2d] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
+              />
+            </label>
+          </div>
+
+          <label className="block">
+            <div className="text-xs text-violet-300 mb-1">Blood type</div>
+            <select
+              value={bloodType}
+              onChange={(e) => setBloodType(e.target.value)}
+              disabled={!isEditing}
+              className="w-full rounded-lg border border-violet-300/20 bg-[#130f2d] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
+            >
+              <option value="">Select blood type</option>
+              {bloodTypeOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block">
+            <div className="text-xs text-violet-300 mb-1">Address</div>
+            <textarea
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              disabled={!isEditing}
+              rows={2}
+              className="w-full rounded-lg border border-violet-300/20 bg-[#130f2d] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
+            />
+          </label>
+
+          <label className="block">
+            <div className="text-xs text-violet-300 mb-1">Emergency contact</div>
+            <input
+              value={emergencyContact}
+              onChange={(e) => setEmergencyContact(e.target.value)}
+              disabled={!isEditing}
+              placeholder="Name and phone"
+              className="w-full rounded-lg border border-violet-300/20 bg-[#130f2d] px-3 py-2 text-violet-100 outline-none focus:border-violet-300/40"
+            />
+          </label>
+        </div>
+
         <div className="space-y-2">
           <label className="flex items-center justify-between rounded-lg border border-violet-300/15 bg-[#1a1335] px-3 py-2">
             <span className="text-sm">Email reminders</span>
@@ -367,6 +468,8 @@ export default function PatientAccount() {
         {msg ? (
           <div className={`text-sm ${msgType === "error" ? "text-rose-300" : "text-emerald-300"}`}>{msg}</div>
         ) : null}
+
+        {profileLoading ? <div className="text-xs text-violet-300/80">Loading profile...</div> : null}
       </form>
     </div>
   );

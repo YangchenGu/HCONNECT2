@@ -10,6 +10,8 @@ export default function Patients({ search }) {
   const navigate = useNavigate();
   const [relationData, setRelationData] = useState({ pending: [], linked: [] });
   const [loading, setLoading] = useState(false);
+  const [busyPatientId, setBusyPatientId] = useState(null);
+  const [confirmingPatient, setConfirmingPatient] = useState(null);
   const [info, setInfo] = useState("");
   const [infoType, setInfoType] = useState("success");
 
@@ -23,6 +25,7 @@ export default function Patients({ search }) {
 
   async function fetchDoctorMatchState() {
     if (!isAuthenticated) return;
+    setLoading(true);
     try {
       const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
       const res = await fetch(apiUrl("/api/doctor/match-requests"), {
@@ -36,12 +39,39 @@ export default function Patients({ search }) {
     } catch (error) {
       setInfoType("error");
       setInfo(error.message || "Failed to load relationship state");
+    } finally {
+      setLoading(false);
     }
   }
 
   useEffect(() => {
     fetchDoctorMatchState();
   }, [isAuthenticated]);
+
+  async function removeRelationship() {
+    if (!confirmingPatient?.patient_id) return;
+
+    setBusyPatientId(confirmingPatient.patient_id);
+    try {
+      const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+      const res = await fetch(apiUrl(`/api/doctor/patients/${confirmingPatient.patient_id}/relation`), {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || "Failed to remove relationship");
+
+      setInfoType("success");
+      setInfo(`Relationship removed for ${confirmingPatient.patient_name || "patient"}.`);
+      setConfirmingPatient(null);
+      await fetchDoctorMatchState();
+    } catch (error) {
+      setInfoType("error");
+      setInfo(error.message || "Failed to remove relationship");
+    } finally {
+      setBusyPatientId(null);
+    }
+  }
 
   return (
     <div className="p-6 space-y-4">
@@ -92,14 +122,30 @@ export default function Patients({ search }) {
                     {p.created_at ? new Date(p.created_at).toLocaleDateString() : "-"}
                   </td>
                   <td className="py-3 pr-4 text-right">
-                    <button
-                      type="button"
-                      disabled={!p.patient_id}
-                      onClick={() => navigate(`/reports/detail?patientId=${p.patient_id}`)}
-                      className="rounded-xl px-3 py-2 text-xs bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-50"
-                    >
-                      View detailed report
-                    </button>
+                    <div className="inline-flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={!p.patient_id}
+                        onClick={() => navigate(`/reports/detail?patientId=${p.patient_id}`)}
+                        className="rounded-xl px-3 py-2 text-xs bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-50"
+                      >
+                        View detailed report
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!p.patient_id || busyPatientId === p.patient_id}
+                        onClick={() =>
+                          setConfirmingPatient({
+                            patient_id: p.patient_id,
+                            patient_name: p.patient_name || "Patient",
+                            patient_email: p.patient_email || "",
+                          })
+                        }
+                        className="rounded-xl px-3 py-2 text-xs bg-rose-600 hover:bg-rose-500 text-white disabled:opacity-50"
+                      >
+                        {busyPatientId === p.patient_id ? "Removing..." : "Remove"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -121,6 +167,38 @@ export default function Patients({ search }) {
           </div>
         ) : null}
       </Card>
+
+      {confirmingPatient ? (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-rose-300/30 bg-[#1b1834] p-5 text-violet-100 shadow-2xl">
+            <h3 className="text-base font-semibold text-white">Confirm relationship removal</h3>
+            <p className="mt-2 text-sm text-violet-200/90">
+              You are about to remove the doctor-patient relationship with <span className="font-semibold text-white">{confirmingPatient.patient_name}</span>.
+            </p>
+            <p className="mt-1 text-xs text-violet-300/85 break-all">{confirmingPatient.patient_email}</p>
+            <p className="mt-3 text-xs text-rose-200/90">This helps prevent accidental removal. Please confirm this action.</p>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmingPatient(null)}
+                disabled={Boolean(busyPatientId)}
+                className="rounded-xl border border-violet-300/30 bg-violet-800/40 hover:bg-violet-800/60 text-violet-100 px-4 py-2 text-sm disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={removeRelationship}
+                disabled={Boolean(busyPatientId)}
+                className="rounded-xl bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+              >
+                {busyPatientId ? "Removing..." : "Yes, remove"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
