@@ -463,6 +463,52 @@ function buildEditableDateWindow() {
   return values;
 }
 
+function parseCountrySelection(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return null;
+  const matched = raw.match(/^\+([\d]+)(?:-(\w{2}))?$/);
+  if (!matched) return null;
+  const dialCode = `+${matched[1]}`;
+  const country = matched[2] ? String(matched[2]).toUpperCase() : null;
+  return { dialCode, country };
+}
+
+function normalizeOptionalPhoneDigits(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return null;
+  if (!/^\d{7,15}$/.test(digits)) {
+    throw new Error("Phone must contain 7-15 digits");
+  }
+  return digits;
+}
+
+async function getDoctorCountryByDoctorId(doctorId, executor = db) {
+  const result = await executor.query(
+    `SELECT COALESCE(u."country", hp."country") AS country
+     FROM doctor_profiles dp
+     JOIN users u ON u."UserID"=dp."UserID"
+     LEFT JOIN healthcare_providers hp ON hp."ProviderID"=dp."ProviderID"
+     WHERE dp."DoctorID"=$1
+     LIMIT 1`,
+    [doctorId]
+  );
+  return result.rows[0]?.country || null;
+}
+
+async function getPatientCountryByPatientId(patientId, executor = db) {
+  const result = await executor.query(
+    `SELECT u."country" AS country
+     FROM patient_profiles pp
+     JOIN users u ON u."UserID"=pp."UserID"
+     WHERE pp."PatientID"=$1
+     LIMIT 1`,
+    [patientId]
+  );
+  return result.rows[0]?.country || null;
+}
+
 function normalizeAdviceUrgency(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (["urgent", "紧急"].includes(raw)) return "urgent";
@@ -810,8 +856,10 @@ app.post("/internal/create-auth0-user", async (req, res) => {
     // ensure phone belongs to a pre-registered provider and not already used
     // In testing mode, create a temporary provider record when not found.
     let providerId;
+    let providerCountry = null;
+    let providerPhone = phoneNumber;
     const provRes = await db.query(
-      `SELECT "ProviderID" FROM healthcare_providers WHERE phone_number=$1`,
+      `SELECT "ProviderID", "country", "phone_number" FROM healthcare_providers WHERE phone_number=$1`,
       [phoneNumber]
     );
     if (!provRes.rows.length) {
@@ -822,12 +870,16 @@ app.post("/internal/create-auth0-user", async (req, res) => {
       const inserted = await db.query(
         `INSERT INTO healthcare_providers (country, phone_number, provider_name, institution, specialty)
          VALUES ($1,$2,$3,$4,$5)
-         RETURNING "ProviderID"`,
+         RETURNING "ProviderID", "country", "phone_number"`,
         ["TS", phoneNumber, "Test Provider", "HCONNECT Test", "General"]
       );
       providerId = inserted.rows[0].ProviderID;
+      providerCountry = inserted.rows[0].country || null;
+      providerPhone = inserted.rows[0].phone_number || phoneNumber;
     } else {
       providerId = provRes.rows[0].ProviderID;
+      providerCountry = provRes.rows[0].country || null;
+      providerPhone = provRes.rows[0].phone_number || phoneNumber;
     }
 
     const registered = await db.query(`SELECT 1 FROM doctor_profiles WHERE "ProviderID"=$1`, [providerId]);
@@ -865,8 +917,17 @@ app.post("/internal/create-auth0-user", async (req, res) => {
     // write local user and doctor_profile if providerId provided
     try {
       const userResult = await db.query(
-        `INSERT INTO users ("auth0_id", "email", "name", "role") VALUES ($1,$2,$3,$4) ON CONFLICT ("auth0_id") DO UPDATE SET "updated_at"=CURRENT_TIMESTAMP RETURNING "UserID"`,
-        [created.user_id, email, name, 'doctor']
+        `INSERT INTO users ("auth0_id", "email", "name", "role", "phone", "country")
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT ("auth0_id") DO UPDATE SET
+           "email"=EXCLUDED."email",
+           "name"=EXCLUDED."name",
+           "role"=EXCLUDED."role",
+           "phone"=COALESCE(EXCLUDED."phone", users."phone"),
+           "country"=COALESCE(EXCLUDED."country", users."country"),
+           "updated_at"=CURRENT_TIMESTAMP
+         RETURNING "UserID"`,
+        [created.user_id, email, name, 'doctor', providerPhone, providerCountry]
       );
       const userId = userResult.rows[0].UserID;
       await db.query(
@@ -1098,30 +1159,72 @@ app.post("/api/doctor/verify-phone", async (req, res) => {
 // POST /api/register - register user (after role selection)
 app.post("/api/register", checkJwt, async (req, res) => {
   try {
-    const { auth0_id, email, name, role, phone_number } = req.body;
+    const { auth0_id, email, name, role, phone_number, country_code } = req.body;
 
     if (!["doctor", "patient"].includes(role)) {
       return res.status(400).json({ error: "Invalid role" });
     }
 
     try {
+      let resolvedPhone = String(phone_number || "").trim() || null;
+      let resolvedCountry = null;
+      const parsedCountrySelection = parseCountrySelection(country_code);
+      if (country_code && !parsedCountrySelection) {
+        throw new Error("Invalid country_code format. Use values like +1-US or +1-CA");
+      }
+
+      if (role === "doctor") {
+        if (!resolvedPhone) {
+          throw new Error("Doctor registration requires phone_number");
+        }
+
+        let provRes;
+        if (parsedCountrySelection?.country) {
+          provRes = await db.query(
+            `SELECT "ProviderID", "country", "phone_number" FROM healthcare_providers WHERE phone_number=$1 AND "country"=$2 LIMIT 1`,
+            [resolvedPhone, parsedCountrySelection.country]
+          );
+        } else {
+          provRes = await db.query(
+            `SELECT "ProviderID", "country", "phone_number" FROM healthcare_providers WHERE phone_number=$1 LIMIT 1`,
+            [resolvedPhone]
+          );
+        }
+        if (!provRes.rows.length) {
+          throw new Error("Phone number not found among pre-registered providers");
+        }
+
+        resolvedPhone = provRes.rows[0].phone_number || resolvedPhone;
+        resolvedCountry = provRes.rows[0].country || null;
+      } else if (role === "patient") {
+        if (resolvedPhone && !/^\+\d{7,20}$/.test(resolvedPhone)) {
+          throw new Error("Patient phone_number must be in full international format (e.g. +14165551234)");
+        }
+        resolvedCountry = parsedCountrySelection?.country || null;
+      }
+
       // 尝试写入数据库
       const userResult = await db.query(
-        `INSERT INTO users ("auth0_id", "email", "name", "role") 
-         VALUES ($1, $2, $3, $4) 
-         ON CONFLICT("auth0_id") DO UPDATE SET "updated_at" = CURRENT_TIMESTAMP
+        `INSERT INTO users ("auth0_id", "email", "name", "role", "phone", "country") 
+         VALUES ($1, $2, $3, $4, $5, $6) 
+         ON CONFLICT("auth0_id") DO UPDATE SET
+           "email"=EXCLUDED."email",
+           "name"=EXCLUDED."name",
+           "role"=EXCLUDED."role",
+           "phone"=COALESCE(EXCLUDED."phone", users."phone"),
+           "country"=COALESCE(EXCLUDED."country", users."country"),
+           "updated_at" = CURRENT_TIMESTAMP
          RETURNING "UserID"`,
-        [auth0_id, email, name, role]
+        [auth0_id, email, name, role, resolvedPhone, resolvedCountry]
       );
 
       const userId = userResult.rows[0].UserID;
 
       // 创建相应的 profile
       if (role === "doctor") {
-        // phone_number is already in full format (e.g., "+14168215694")
         // look up provider row and use ProviderID as FK into doctor_profiles
         const provRes = await db.query(
-          `SELECT "ProviderID" FROM healthcare_providers WHERE phone_number=$1`, [phone_number]
+          `SELECT "ProviderID" FROM healthcare_providers WHERE phone_number=$1 LIMIT 1`, [resolvedPhone]
         );
         if (!provRes.rows.length) {
           throw new Error("Phone number not found among pre-registered providers");
@@ -1186,9 +1289,22 @@ app.post("/api/register", checkJwt, async (req, res) => {
 // Public patient registration (no phone verification required)
 app.post("/public/register-patient", async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const { email, password, name, countryCode, phone } = req.body;
     if (!email || !password || !name) {
       return res.status(400).json({ error: "email, password and name are required" });
+    }
+
+    const parsedCountrySelection = parseCountrySelection(countryCode);
+    if (!parsedCountrySelection || !parsedCountrySelection.country) {
+      return res.status(400).json({ error: "countryCode is required (e.g., +1-US, +1-CA)" });
+    }
+
+    let fullPhone = null;
+    try {
+      const digits = normalizeOptionalPhoneDigits(phone);
+      fullPhone = digits ? `${parsedCountrySelection.dialCode}${digits}` : null;
+    } catch (error) {
+      return res.status(400).json({ error: error.message || "Invalid phone" });
     }
 
     if (String(password).length < 8) {
@@ -1206,6 +1322,10 @@ app.post("/public/register-patient", async (req, res) => {
         password,
         name,
         email_verified: false,
+        user_metadata: {
+          country: parsedCountrySelection.country,
+          ...(fullPhone ? { phoneNumber: fullPhone } : {}),
+        },
       },
       {
         headers: { Authorization: `Bearer ${mgmtToken}`, "Content-Type": "application/json" }
@@ -1216,15 +1336,17 @@ app.post("/public/register-patient", async (req, res) => {
 
     try {
       const userWrite = await db.query(
-        `INSERT INTO users ("auth0_id", "email", "name", "role")
-         VALUES ($1,$2,$3,$4)
+        `INSERT INTO users ("auth0_id", "email", "name", "role", "phone", "country")
+         VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT ("auth0_id") DO UPDATE SET
            "email"=EXCLUDED."email",
            "name"=EXCLUDED."name",
            "role"=EXCLUDED."role",
+           "phone"=COALESCE(EXCLUDED."phone", users."phone"),
+           "country"=COALESCE(EXCLUDED."country", users."country"),
            "updated_at"=CURRENT_TIMESTAMP
          RETURNING "UserID"`,
-        [created.user_id, email, name, "patient"]
+        [created.user_id, email, name, "patient", fullPhone, parsedCountrySelection.country]
       );
 
       const userId = userWrite.rows[0]?.UserID;
@@ -1422,6 +1544,19 @@ app.post("/api/doctor/match-requests", checkJwt, requireRole("doctor"), async (r
     if (patientUser.role !== "patient") return res.status(400).json({ error: "Target user is not a patient" });
 
     const patientProfile = await ensurePatientProfileByUserId(patientUser.UserID);
+
+    const doctorCountry = await getDoctorCountryByDoctorId(doctorProfile.DoctorID);
+    const patientCountry = await getPatientCountryByPatientId(patientProfile.PatientID);
+    if (!doctorCountry || !patientCountry) {
+      return res.status(409).json({
+        error: "Region is missing for doctor or patient. Both accounts must have country set before linking.",
+      });
+    }
+    if (doctorCountry !== patientCountry) {
+      return res.status(403).json({
+        error: `Cross-region matching is not allowed (doctor: ${doctorCountry}, patient: ${patientCountry})`,
+      });
+    }
 
     const relation = await db.query(
       `SELECT 1 FROM doctor_patient_relations WHERE "DoctorID"=$1 AND "PatientID"=$2 LIMIT 1`,
@@ -1629,6 +1764,21 @@ app.post("/api/patient/match-requests/:requestId/respond", checkJwt, requireRole
     if (reqRow.status !== "pending") {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "Request is already resolved" });
+    }
+
+    const doctorCountry = await getDoctorCountryByDoctorId(reqRow.DoctorID, client);
+    const patientCountry = await getPatientCountryByPatientId(reqRow.PatientID, client);
+    if (!doctorCountry || !patientCountry) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "Region is missing for doctor or patient. Both accounts must have country set before linking.",
+      });
+    }
+    if (doctorCountry !== patientCountry) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({
+        error: `Cross-region matching is not allowed (doctor: ${doctorCountry}, patient: ${patientCountry})`,
+      });
     }
 
     if (action === "accept") {

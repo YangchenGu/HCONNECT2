@@ -6,10 +6,24 @@ import { apiUrl } from "../lib/api.js";
 export default function PatientRegister() {
   const navigate = useNavigate();
   const { loginWithRedirect } = useAuth0();
-  const [form, setForm] = useState({ name: "", email: "", password: "", confirm: "" });
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+    confirm: "",
+    countryCode: "+1-US",
+    phone: "",
+  });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+
+  const countryOptions = [
+    { code: "+1-US", label: "United States (+1)" },
+    { code: "+1-CA", label: "Canada (+1)" },
+    { code: "+44-GB", label: "United Kingdom (+44)" },
+    { code: "+86-CN", label: "China (+86)" },
+  ];
 
   function update(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -32,6 +46,10 @@ export default function PatientRegister() {
       setError("Passwords do not match.");
       return;
     }
+    if (form.phone && !/^\d{7,15}$/.test(form.phone)) {
+      setError("Phone must be 7-15 digits when provided.");
+      return;
+    }
 
     setLoading(true);
     try {
@@ -42,6 +60,8 @@ export default function PatientRegister() {
           name: form.name.trim(),
           email: form.email.trim(),
           password: form.password,
+          countryCode: form.countryCode,
+          phone: form.phone,
         }),
       });
 
@@ -73,7 +93,7 @@ export default function PatientRegister() {
         </div>
 
         <h1 className="mt-4 text-3xl font-semibold text-white">Create your patient account</h1>
-        <p className="mt-2 text-sm text-blue-100/85">No phone verification is required at this stage.</p>
+        <p className="mt-2 text-sm text-blue-100/85">Country selection is required for regional data boundary rules. Phone is optional.</p>
 
         <form onSubmit={handleSubmit} className="mt-7 grid gap-3">
           <input
@@ -89,6 +109,28 @@ export default function PatientRegister() {
             placeholder="Email"
             className="w-full rounded-xl border border-blue-300/35 bg-blue-900/45 px-3 py-2.5 text-blue-100 placeholder-blue-200/60 outline-none focus:border-blue-300/70"
           />
+
+          <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-2">
+            <select
+              value={form.countryCode}
+              onChange={(e) => update("countryCode", e.target.value)}
+              className="w-full rounded-xl border border-blue-300/35 bg-blue-900/45 px-3 py-2.5 text-blue-100 outline-none focus:border-blue-300/70"
+            >
+              {countryOptions.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <input
+              type="tel"
+              value={form.phone}
+              onChange={(e) => update("phone", e.target.value.replace(/\D/g, ""))}
+              placeholder="Phone digits (optional)"
+              className="w-full rounded-xl border border-blue-300/35 bg-blue-900/45 px-3 py-2.5 text-blue-100 placeholder-blue-200/60 outline-none focus:border-blue-300/70"
+            />
+          </div>
+
           <input
             type="password"
             value={form.password}

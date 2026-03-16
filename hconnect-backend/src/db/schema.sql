@@ -12,10 +12,8 @@ CREATE TABLE users (
   "name" VARCHAR(255) NOT NULL,
   "email" VARCHAR(255) UNIQUE NOT NULL,
   "phone" VARCHAR(20),
-  "password_hash" VARCHAR(255),
+  "country" VARCHAR(2),
   "auth0_id" VARCHAR(255) UNIQUE,
-  "date_of_birth" DATE,
-  "gender" VARCHAR(10),
   "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "updated_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
