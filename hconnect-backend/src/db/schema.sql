@@ -67,6 +67,21 @@ CREATE TABLE doctor_patient_relations (
   UNIQUE("DoctorID", "PatientID")
 );
 
+-- Doctor_Patient_Match_Requests table (pending requests before relation is accepted)
+CREATE TABLE doctor_patient_match_requests (
+  "RequestID" SERIAL PRIMARY KEY,
+  "DoctorID" INT NOT NULL REFERENCES doctor_profiles("DoctorID") ON DELETE CASCADE,
+  "PatientID" INT NOT NULL REFERENCES patient_profiles("PatientID") ON DELETE CASCADE,
+  "status" VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK ("status" IN ('pending', 'accepted', 'rejected', 'cancelled')),
+  "message" TEXT,
+  "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  "responded_at" TIMESTAMP
+);
+
+CREATE UNIQUE INDEX uniq_pending_match_request
+ON doctor_patient_match_requests ("DoctorID", "PatientID")
+WHERE "status" = 'pending';
+
 -- Appointment_Slots table (doctor appointment slots)
 CREATE TABLE appointment_slots (
   "SlotID" SERIAL PRIMARY KEY,
@@ -85,6 +100,18 @@ CREATE TABLE appointments (
   "SlotID" INT NOT NULL REFERENCES appointment_slots("SlotID") ON DELETE CASCADE,
   "status" appointment_status_enum DEFAULT 'pending',
   "reason" TEXT,
+  "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Patient_Advices table (doctor advices for linked patients)
+CREATE TABLE patient_advices (
+  "AdviceID" SERIAL PRIMARY KEY,
+  "DoctorID" INT NOT NULL REFERENCES doctor_profiles("DoctorID") ON DELETE CASCADE,
+  "PatientID" INT NOT NULL REFERENCES patient_profiles("PatientID") ON DELETE CASCADE,
+  "content" TEXT NOT NULL,
+  "urgency" VARCHAR(20) NOT NULL CHECK ("urgency" IN ('urgent', 'normal', 'low')),
+  "is_acknowledged" BOOLEAN NOT NULL DEFAULT FALSE,
+  "acknowledged_at" TIMESTAMP,
   "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
