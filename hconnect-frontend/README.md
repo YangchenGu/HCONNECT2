@@ -1,16 +1,74 @@
-# React + Vite
+# HCONNECT Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+HCONNECT frontend is a React + Vite single page application for doctor and patient workflows.
 
-Currently, two official plugins are available:
+## Tech stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- React 19
+- React Router 6
+- Auth0 React SDK
+- Tailwind CSS
+- Vite
 
-## React Compiler
+## Local development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Prerequisites:
 
-## Expanding the ESLint configuration
+- Node.js 18+ (20+ recommended)
+- npm
+- Backend API running locally (default: http://localhost:3000)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Install and run:
+
+1. Install dependencies
+
+	npm install
+
+2. Create env file
+
+	copy .env.example .env
+
+3. Start dev server
+
+	npm run dev
+
+App default URL: http://localhost:5173
+
+## Environment variables
+
+The frontend currently requires:
+
+- VITE_API_BASE_URL
+
+Recommended values:
+
+- Local development: http://localhost:3000
+- Same-domain reverse proxy: /
+
+## Scripts
+
+- npm run dev: start development server
+- npm run build: create production build
+- npm run preview: preview production build locally
+- npm run lint: run ESLint
+
+## Main user flows
+
+- Role selection at /
+- Patient entry at /patient/entry
+- Patient registration at /patient/register
+- Doctor dashboard at /dashboard
+- Patient dashboard at /patient/dashboard
+
+## Related docs
+
+- Root project guide: ../README.md
+- Backend API and env setup: ../hconnect-backend/.env.example
+
+## Troubleshooting
+
+If API requests fail in development:
+
+1. Confirm backend is running on the same origin set by VITE_API_BASE_URL.
+2. Confirm Auth0 settings allow localhost callbacks/origins.
+3. Check browser console network errors and backend logs.
