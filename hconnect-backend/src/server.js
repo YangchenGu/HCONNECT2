@@ -846,8 +846,8 @@ app.post("/internal/create-auth0-user", async (req, res) => {
     }
 
     const parsedCountrySelection = parseCountrySelection(countryCode);
-    if (countryCode && !parsedCountrySelection) {
-      return res.status(400).json({ error: "Invalid countryCode format. Use values like +1-US or +1-CA" });
+    if (!parsedCountrySelection || !parsedCountrySelection.country) {
+      return res.status(400).json({ error: "countryCode is required. Use values like +1-US or +1-CA" });
     }
 
     // verify token
@@ -865,22 +865,22 @@ app.post("/internal/create-auth0-user", async (req, res) => {
     let providerCountry = null;
     let providerPhone = phoneNumber;
     const provRes = await db.query(
-      `SELECT "ProviderID", "country", "phone_number" FROM healthcare_providers WHERE phone_number=$1`,
-      [phoneNumber]
+      `SELECT "ProviderID", "country", "phone_number"
+       FROM healthcare_providers
+       WHERE phone_number=$1 AND "country"=$2
+       LIMIT 1`,
+      [phoneNumber, parsedCountrySelection.country]
     );
     if (!provRes.rows.length) {
       if (!ALLOW_ALL_PHONES_FOR_TESTING) {
         return res.status(400).json({ error: "Phone not eligible" });
       }
 
-      // Testing mode: still keep real phone/country metadata from request.
-      const fallbackCountry = parsedCountrySelection?.country || "ZZ";
-
       const inserted = await db.query(
         `INSERT INTO healthcare_providers (country, phone_number, provider_name, institution, specialty)
          VALUES ($1,$2,$3,$4,$5)
          RETURNING "ProviderID", "country", "phone_number"`,
-        [fallbackCountry, phoneNumber, "Test Provider", "HCONNECT Test", "General"]
+        [parsedCountrySelection.country, phoneNumber, "Test Provider", "HCONNECT Test", "General"]
       );
       providerId = inserted.rows[0].ProviderID;
       providerCountry = inserted.rows[0].country || null;

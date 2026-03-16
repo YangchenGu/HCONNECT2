@@ -22,7 +22,13 @@ export default function PatientRegister() {
     { code: "+1-US", label: "United States (+1)" },
     { code: "+1-CA", label: "Canada (+1)" },
     { code: "+44-GB", label: "United Kingdom (+44)" },
+    { code: "+61-AU", label: "Australia (+61)" },
+    { code: "+49-DE", label: "Germany (+49)" },
+    { code: "+33-FR", label: "France (+33)" },
+    { code: "+81-JP", label: "Japan (+81)" },
+    { code: "+65-SG", label: "Singapore (+65)" },
     { code: "+86-CN", label: "China (+86)" },
+    { code: "+91-IN", label: "India (+91)" },
   ];
 
   function update(key, value) {
