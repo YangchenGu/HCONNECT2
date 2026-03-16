@@ -3,6 +3,7 @@ CREATE TYPE role_enum AS ENUM('doctor', 'patient');
 CREATE TYPE status_enum AS ENUM('active', 'inactive');
 CREATE TYPE appointment_status_enum AS ENUM('pending', 'confirmed', 'cancelled', 'completed');
 CREATE TYPE source_enum AS ENUM('manual', 'device', 'doctor');
+CREATE TYPE match_request_status_enum AS ENUM('pending', 'accepted', 'rejected', 'cancelled');
 
 -- Users 表 (核心用户表)
 CREATE TABLE users (
@@ -72,7 +73,7 @@ CREATE TABLE doctor_patient_match_requests (
   "RequestID" SERIAL PRIMARY KEY,
   "DoctorID" INT NOT NULL REFERENCES doctor_profiles("DoctorID") ON DELETE CASCADE,
   "PatientID" INT NOT NULL REFERENCES patient_profiles("PatientID") ON DELETE CASCADE,
-  "status" VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK ("status" IN ('pending', 'accepted', 'rejected', 'cancelled')),
+  "status" match_request_status_enum NOT NULL DEFAULT 'pending',
   "message" TEXT,
   "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "responded_at" TIMESTAMP
@@ -114,6 +115,10 @@ CREATE TABLE patient_advices (
   "acknowledged_at" TIMESTAMP,
   "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Index to optimize doctor-patient advice history queries ordered by created_at
+CREATE INDEX idx_patient_advices_doctor_patient_created_at_desc
+  ON patient_advices("DoctorID", "PatientID", "created_at" DESC);
 
 -- Health_Metric_Types 表 (健康指标类型)
 CREATE TABLE health_metric_types (
