@@ -69,6 +69,7 @@ const SMS_CODE_LENGTH = Math.max(4, Math.min(8, Number(process.env.SMS_CODE_LENG
 const SMS_CODE_TTL_MS = Math.max(60 * 1000, Number(process.env.SMS_CODE_TTL_MS || 5 * 60 * 1000));
 const ALLOW_ALL_PHONES_FOR_TESTING = String(process.env.ALLOW_ALL_PHONES_FOR_TESTING || "false").toLowerCase() === "true";
 const BYPASS_SMS_VERIFICATION_FOR_TESTING = String(process.env.BYPASS_SMS_VERIFICATION_FOR_TESTING || "false").toLowerCase() === "true";
+const ENFORCE_REGION_MATCH_FOR_RELATION = String(process.env.ENFORCE_REGION_MATCH_FOR_RELATION || "false").toLowerCase() === "true";
 
 function generateNumericCode(length) {
   const min = Math.pow(10, length - 1);
@@ -1553,17 +1554,19 @@ app.post("/api/doctor/match-requests", checkJwt, requireRole("doctor"), async (r
 
     const patientProfile = await ensurePatientProfileByUserId(patientUser.UserID);
 
-    const doctorCountry = await getDoctorCountryByDoctorId(doctorProfile.DoctorID);
-    const patientCountry = await getPatientCountryByPatientId(patientProfile.PatientID);
-    if (!doctorCountry || !patientCountry) {
-      return res.status(409).json({
-        error: "Region is missing for doctor or patient. Both accounts must have country set before linking.",
-      });
-    }
-    if (doctorCountry !== patientCountry) {
-      return res.status(403).json({
-        error: `Cross-region matching is not allowed (doctor: ${doctorCountry}, patient: ${patientCountry})`,
-      });
+    if (ENFORCE_REGION_MATCH_FOR_RELATION) {
+      const doctorCountry = await getDoctorCountryByDoctorId(doctorProfile.DoctorID);
+      const patientCountry = await getPatientCountryByPatientId(patientProfile.PatientID);
+      if (!doctorCountry || !patientCountry) {
+        return res.status(409).json({
+          error: "Region is missing for doctor or patient. Both accounts must have country set before linking.",
+        });
+      }
+      if (doctorCountry !== patientCountry) {
+        return res.status(403).json({
+          error: `Cross-region matching is not allowed (doctor: ${doctorCountry}, patient: ${patientCountry})`,
+        });
+      }
     }
 
     const relation = await db.query(
@@ -1774,19 +1777,21 @@ app.post("/api/patient/match-requests/:requestId/respond", checkJwt, requireRole
       return res.status(409).json({ error: "Request is already resolved" });
     }
 
-    const doctorCountry = await getDoctorCountryByDoctorId(reqRow.DoctorID, client);
-    const patientCountry = await getPatientCountryByPatientId(reqRow.PatientID, client);
-    if (!doctorCountry || !patientCountry) {
-      await client.query("ROLLBACK");
-      return res.status(409).json({
-        error: "Region is missing for doctor or patient. Both accounts must have country set before linking.",
-      });
-    }
-    if (doctorCountry !== patientCountry) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({
-        error: `Cross-region matching is not allowed (doctor: ${doctorCountry}, patient: ${patientCountry})`,
-      });
+    if (ENFORCE_REGION_MATCH_FOR_RELATION) {
+      const doctorCountry = await getDoctorCountryByDoctorId(reqRow.DoctorID, client);
+      const patientCountry = await getPatientCountryByPatientId(reqRow.PatientID, client);
+      if (!doctorCountry || !patientCountry) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: "Region is missing for doctor or patient. Both accounts must have country set before linking.",
+        });
+      }
+      if (doctorCountry !== patientCountry) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          error: `Cross-region matching is not allowed (doctor: ${doctorCountry}, patient: ${patientCountry})`,
+        });
+      }
     }
 
     if (action === "accept") {
