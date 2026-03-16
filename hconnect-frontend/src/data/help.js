@@ -1,19 +1,27 @@
 export const faqs = [
   {
     q: "How do I add a new patient?",
-    a: "Go to Patient Management → Add New Patient. This is a UI skeleton; wire it to your backend later.",
+    a: "Open Patient Management > Add New Patient. After the request is accepted, the patient appears in Patient List as a linked patient.",
   },
   {
-    q: "How do reports work?",
-    a: "Reports pages are built with placeholder charts/cards. Next step is connecting real analytics data.",
+    q: "How do I search patients?",
+    a: "Use the search box inside Patient List. It filters linked patients by name and email.",
   },
   {
-    q: "Where can I change notification rules?",
-    a: "Settings → Notification Settings contains toggles and placeholders for channels, quiet hours, and digests.",
+    q: "How do daily reports work?",
+    a: "Go to Daily Reports to review submitted patient reports. Use View detailed report to open a patient-specific timeline and details.",
   },
   {
-    q: "Who can access patient data?",
-    a: "This demo does not include authentication. In production, restrict access via roles and audit logs.",
+    q: "How do medical advice and acknowledgement work?",
+    a: "In Patient Report Detail, submit medical advice with urgency. Patients can acknowledge advice, and acknowledgement status is visible to doctors.",
+  },
+  {
+    q: "How can I change my password?",
+    a: "Go to Account Settings > Security and click Send password reset email. A reset link will be sent by Auth0 to your account email.",
+  },
+  {
+    q: "Why can't I access some patient data?",
+    a: "Access is limited to linked doctor-patient relationships and authenticated role-based permissions.",
   },
 ];
 

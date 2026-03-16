@@ -5,10 +5,11 @@ import Card from "../components/Card.jsx";
 import KPI from "../components/KPI.jsx";
 import { apiUrl } from "../lib/api.js";
 
-export default function Patients({ search }) {
+export default function Patients() {
   const { getAccessTokenSilently, isAuthenticated } = useAuth0();
   const navigate = useNavigate();
   const [relationData, setRelationData] = useState({ pending: [], linked: [] });
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [busyPatientId, setBusyPatientId] = useState(null);
   const [confirmingPatient, setConfirmingPatient] = useState(null);
@@ -19,7 +20,7 @@ export default function Patients({ search }) {
     const q = search.trim().toLowerCase();
     if (!q) return relationData.linked;
     return relationData.linked.filter((p) =>
-      [p.patient_name, p.patient_email, p.status].some((x) => String(x || "").toLowerCase().includes(q))
+      [p.patient_name, p.patient_email].some((x) => String(x || "").toLowerCase().includes(q))
     );
   }, [search, relationData.linked]);
 
@@ -85,11 +86,34 @@ export default function Patients({ search }) {
       <Card
         title="Patient List (Linked Only)"
         right={
-          <a href="/patients/new" className="text-xs rounded-xl px-3 py-2 bg-slate-900 text-white hover:bg-slate-800">
-            + Add
-          </a>
+          <div className="flex items-center gap-2">
+            <div className="hidden md:flex items-center gap-2 rounded-2xl bg-white ring-1 ring-black/5 px-3 py-2">
+              <span className="text-slate-500">🔎</span>
+              <input
+                className="outline-none text-sm w-56 bg-transparent text-slate-900 placeholder:text-slate-500"
+                placeholder="Search patient name or email"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <a href="/patients/new" className="text-xs rounded-xl px-3 py-2 bg-slate-900 text-white hover:bg-slate-800">
+              + Add
+            </a>
+          </div>
         }
       >
+        <div className="mb-3 md:hidden">
+          <div className="flex items-center gap-2 rounded-2xl bg-white ring-1 ring-black/5 px-3 py-2">
+            <span className="text-slate-500">🔎</span>
+            <input
+              className="outline-none text-sm w-full bg-transparent text-slate-900 placeholder:text-slate-500"
+              placeholder="Search patient name or email"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+        </div>
+
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-left text-slate-500 border-b">

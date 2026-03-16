@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
 import Card from "../components/Card.jsx";
 import { accountProfileDefaults, securityDefaults } from "../data/account_settings.js";
@@ -15,6 +15,13 @@ function SectionTitle({ title, subtitle }) {
       {subtitle ? <div className="mt-1 text-xs text-slate-500">{subtitle}</div> : null}
     </div>
   );
+}
+
+function formatSecurityTime(value) {
+  if (!value || value === "Not available") return "Not available";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString();
 }
 
 function Toggle({ checked, onChange, label, hint, disabled = false }) {
@@ -50,7 +57,8 @@ function Toggle({ checked, onChange, label, hint, disabled = false }) {
 }
 
 export default function AccountSettings() {
-  const { user, logout, getAccessTokenSilently } = useAuth0();
+  const { user, logout, getAccessTokenSilently, isAuthenticated } = useAuth0();
+  const fileInputRef = useRef(null);
   const [profile, setProfile] = useState(accountProfileDefaults);
   const [security, setSecurity] = useState(securityDefaults);
   const [preferences, setPreferences] = useState({
@@ -60,7 +68,6 @@ export default function AccountSettings() {
   });
   const [savedSnapshot, setSavedSnapshot] = useState({
     profile: accountProfileDefaults,
-    security: securityDefaults,
     preferences: {
       emailUpdates: true,
       smsUpdates: false,
@@ -70,6 +77,8 @@ export default function AccountSettings() {
   const [statusMsg, setStatusMsg] = useState("");
   const [statusType, setStatusType] = useState("success");
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [passwordResetLoading, setPasswordResetLoading] = useState(false);
+  const [securityLoading, setSecurityLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
   const storageKey = useMemo(() => `account_settings_${user?.sub || "guest"}`, [user?.sub]);
@@ -86,7 +95,6 @@ export default function AccountSettings() {
     if (!raw) {
       const fresh = {
         profile: baseProfile,
-        security: securityDefaults,
         preferences: {
           emailUpdates: true,
           smsUpdates: false,
@@ -94,7 +102,6 @@ export default function AccountSettings() {
         },
       };
       setProfile(fresh.profile);
-      setSecurity(fresh.security);
       setPreferences(fresh.preferences);
       setSavedSnapshot(fresh);
       return;
@@ -104,7 +111,6 @@ export default function AccountSettings() {
       const parsed = JSON.parse(raw);
       const hydrated = {
         profile: { ...baseProfile, ...(parsed.profile || {}) },
-        security: { ...securityDefaults, ...(parsed.security || {}) },
         preferences: {
           emailUpdates: true,
           smsUpdates: false,
@@ -113,13 +119,11 @@ export default function AccountSettings() {
         },
       };
       setProfile(hydrated.profile);
-      setSecurity(hydrated.security);
       setPreferences(hydrated.preferences);
       setSavedSnapshot(hydrated);
     } catch {
       const fallback = {
         profile: baseProfile,
-        security: securityDefaults,
         preferences: {
           emailUpdates: true,
           smsUpdates: false,
@@ -127,11 +131,39 @@ export default function AccountSettings() {
         },
       };
       setProfile(fallback.profile);
-      setSecurity(fallback.security);
       setPreferences(fallback.preferences);
       setSavedSnapshot(fallback);
     }
   }, [storageKey, user?.email, user?.name]);
+
+  useEffect(() => {
+    async function loadSecurityInfo() {
+      if (!isAuthenticated) return;
+
+      setSecurityLoading(true);
+      try {
+        const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+        const res = await fetch(apiUrl("/api/account/security"), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || "Failed to load security information");
+
+        setSecurity({
+          lastLogin: payload.lastLogin || "Not available",
+          lastPasswordChange: payload.lastPasswordChange || "Not available",
+        });
+      } catch (error) {
+        setSecurity(securityDefaults);
+        setStatusType("error");
+        setStatusMsg(error.message || "Failed to load security information.");
+      } finally {
+        setSecurityLoading(false);
+      }
+    }
+
+    loadSecurityInfo();
+  }, [isAuthenticated, getAccessTokenSilently]);
 
   const validation = useMemo(() => {
     const errors = {};
@@ -144,12 +176,56 @@ export default function AccountSettings() {
   }, [profile]);
 
   const isDirty = useMemo(() => {
-    return JSON.stringify({ profile, security, preferences }) !== JSON.stringify(savedSnapshot);
-  }, [profile, security, preferences, savedSnapshot]);
+    return JSON.stringify({ profile, preferences }) !== JSON.stringify(savedSnapshot);
+  }, [profile, preferences, savedSnapshot]);
 
   const canSave = useMemo(() => {
     return isEditing && Object.keys(validation).length === 0 && isDirty;
   }, [validation, isDirty]);
+
+  function triggerAvatarPicker() {
+    if (!isEditing) return;
+    fileInputRef.current?.click();
+  }
+
+  function handleAvatarSelected(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setStatusType("error");
+      setStatusMsg("Please upload an image file.");
+      return;
+    }
+
+    const MAX_SIZE_BYTES = 2 * 1024 * 1024;
+    if (file.size > MAX_SIZE_BYTES) {
+      setStatusType("error");
+      setStatusMsg("Image is too large. Please keep it under 2MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const nextAvatar = typeof reader.result === "string" ? reader.result : "";
+      if (!nextAvatar) return;
+      setProfile((prev) => ({ ...prev, avatarDataUrl: nextAvatar }));
+      setStatusType("success");
+      setStatusMsg("Avatar selected. Click Save to apply it.");
+    };
+    reader.onerror = () => {
+      setStatusType("error");
+      setStatusMsg("Failed to read image file.");
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function removeAvatar() {
+    if (!isEditing) return;
+    setProfile((prev) => ({ ...prev, avatarDataUrl: "" }));
+    setStatusType("info");
+    setStatusMsg("Avatar removed. Click Save to apply this change.");
+  }
 
   useEffect(() => {
     if (!(isEditing && isDirty)) return;
@@ -188,8 +264,9 @@ export default function AccountSettings() {
   function saveProfile(e) {
     e.preventDefault();
     if (!canSave) return;
-    const snapshot = { profile, security, preferences };
+    const snapshot = { profile, preferences };
     localStorage.setItem(storageKey, JSON.stringify(snapshot));
+    window.dispatchEvent(new Event("hconnect-account-settings-updated"));
     setSavedSnapshot(snapshot);
     setIsEditing(false);
     setStatusType("success");
@@ -202,14 +279,29 @@ export default function AccountSettings() {
     setIsEditing(true);
   }
 
-  function changePassword() {
-    setStatusType("info");
-    setStatusMsg("Password changes are managed by Auth0. Use the login page 'Forgot password' flow.");
-    setTimeout(() => setStatusMsg(""), 3500);
-  }
+  async function changePassword() {
+    setPasswordResetLoading(true);
+    setStatusMsg("");
+    try {
+      const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+      const res = await fetch(apiUrl("/api/account/password-reset-email"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || "Failed to send password reset email");
 
-  function logoutEverywhere() {
-    logout({ logoutParams: { returnTo: APP_ORIGIN } });
+      setStatusType("success");
+      setStatusMsg("Password reset email sent. Please check your inbox.");
+      setTimeout(() => setStatusMsg(""), 3500);
+    } catch (error) {
+      setStatusType("error");
+      setStatusMsg(error.message || "Failed to send password reset email.");
+    } finally {
+      setPasswordResetLoading(false);
+    }
   }
 
   function resetToLastSaved() {
@@ -218,7 +310,6 @@ export default function AccountSettings() {
       if (!ok) return;
     }
     setProfile(savedSnapshot.profile);
-    setSecurity(savedSnapshot.security);
     setPreferences(savedSnapshot.preferences);
     setIsEditing(false);
     setStatusType("info");
@@ -326,16 +417,40 @@ export default function AccountSettings() {
               <div className="md:col-span-2 flex items-center justify-between rounded-2xl bg-slate-50 ring-1 ring-black/5 p-3">
                 <div>
                   <div className="text-sm font-semibold text-slate-900">Profile photo</div>
-                  <div className="text-xs text-slate-500 mt-1">Placeholder: upload avatar / clinic logo.</div>
+                  <div className="text-xs text-slate-500 mt-1">Upload a profile photo shown in the left sidebar.</div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => alert("Upload photo (demo). Next step: file picker + storage.")}
-                  disabled={!isEditing}
-                  className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
-                >
-                  Upload
-                </button>
+                <div className="flex items-center gap-3">
+                  <div className="h-14 w-14 rounded-xl overflow-hidden ring-1 ring-black/10 bg-slate-200 grid place-items-center">
+                    {profile.avatarDataUrl ? (
+                      <img src={profile.avatarDataUrl} alt="Doctor avatar" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-xl">👨‍⚕️</span>
+                    )}
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleAvatarSelected}
+                  />
+                  <button
+                    type="button"
+                    onClick={triggerAvatarPicker}
+                    disabled={!isEditing}
+                    className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {profile.avatarDataUrl ? "Change" : "Upload"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={removeAvatar}
+                    disabled={!isEditing || !profile.avatarDataUrl}
+                    className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    Remove
+                  </button>
+                </div>
               </div>
             </form>
             <div className="flex gap-2 mb-3">
@@ -375,44 +490,29 @@ export default function AccountSettings() {
           <Card title="Security">
             <SectionTitle
               title="Authentication"
-              subtitle="UI skeleton: wire these actions to your auth provider later."
+              subtitle="Security information is synced from Auth0."
             />
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="rounded-2xl bg-slate-50 ring-1 ring-black/5 p-4">
                 <div className="text-xs text-slate-500">Last login</div>
-                <div className="mt-1 text-sm font-semibold text-slate-900">{security.lastLogin}</div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">{securityLoading ? "Loading..." : formatSecurityTime(security.lastLogin)}</div>
               </div>
               <div className="rounded-2xl bg-slate-50 ring-1 ring-black/5 p-4">
                 <div className="text-xs text-slate-500">Last password change</div>
-                <div className="mt-1 text-sm font-semibold text-slate-900">{security.lastPasswordChange}</div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">{securityLoading ? "Loading..." : formatSecurityTime(security.lastPasswordChange)}</div>
               </div>
             </div>
 
             <div className="mt-4 space-y-3">
-              <Toggle
-                checked={security.twoFactorEnabled}
-                onChange={(v) => setSecurity({ ...security, twoFactorEnabled: v })}
-                disabled={!isEditing}
-                label="Two-factor authentication (2FA)"
-                hint="Placeholder: enable/disable 2FA."
-              />
-
               <div className="flex flex-col sm:flex-row gap-2">
                 <button
                   type="button"
                   onClick={changePassword}
-                  disabled={!isEditing}
+                  disabled={passwordResetLoading}
                   className="flex-1 rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
                 >
-                  Change password
-                </button>
-                <button
-                  type="button"
-                  onClick={logoutEverywhere}
-                  className="flex-1 rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
-                >
-                  Log out everywhere
+                  {passwordResetLoading ? "Sending..." : "Send password reset email"}
                 </button>
               </div>
             </div>
@@ -450,27 +550,6 @@ export default function AccountSettings() {
             <div className="text-sm text-slate-700">Sensitive actions. Use with caution.</div>
 
             <div className="mt-3 flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  const payload = {
-                    profile,
-                    security,
-                    preferences,
-                    exportedAt: new Date().toISOString(),
-                  };
-                  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = "hconnect-account-settings.json";
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-                className="rounded-2xl bg-white ring-1 ring-black/5 px-4 py-2 text-sm hover:bg-slate-50"
-              >
-                Download my data
-              </button>
               <button
                 type="button"
                 onClick={deleteAccountData}

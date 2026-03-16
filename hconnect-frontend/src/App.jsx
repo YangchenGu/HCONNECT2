@@ -53,7 +53,6 @@ function titleFromPath(pathname) {
 
 function DashboardLayout({ user, logout, getAccessTokenSilently }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [search, setSearch] = useState("");
   const [notificationCount, setNotificationCount] = useState(0);
   const location = useLocation();
 
@@ -82,11 +81,11 @@ function DashboardLayout({ user, logout, getAccessTokenSilently }) {
     <div className="doctor-theme flex items-start min-h-screen bg-[linear-gradient(180deg,#1a1533_0%,#120f27_100%)] text-slate-100">
       <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} user={user} logout={logout} />
       <div className="flex-1 min-h-screen overflow-x-hidden">
-        <Topbar title={title} search={search} setSearch={setSearch} notificationCount={notificationCount} />
+        <Topbar title={title} notificationCount={notificationCount} />
 
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/patients" element={<Patients search={search} />} />
+          <Route path="/patients" element={<Patients />} />
           <Route path="/patients/new" element={<AddPatient />} />
           <Route path="/appointments" element={<DoctorAppointments />} />
           <Route path="/notifications" element={<Notifications />} />

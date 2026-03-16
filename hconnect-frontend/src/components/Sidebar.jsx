@@ -1,4 +1,4 @@
-﻿import React from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { cn } from "../lib/ui.js";
 
@@ -33,6 +33,33 @@ const NAV = [
 ];
 
 export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
+  const storageKey = useMemo(() => `account_settings_${user?.sub || "guest"}`, [user?.sub]);
+  const [avatarDataUrl, setAvatarDataUrl] = useState("");
+
+  useEffect(() => {
+    const loadAvatar = () => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (!raw) {
+          setAvatarDataUrl("");
+          return;
+        }
+        const parsed = JSON.parse(raw);
+        setAvatarDataUrl(parsed?.profile?.avatarDataUrl || "");
+      } catch {
+        setAvatarDataUrl("");
+      }
+    };
+
+    loadAvatar();
+    window.addEventListener("hconnect-account-settings-updated", loadAvatar);
+    window.addEventListener("storage", loadAvatar);
+    return () => {
+      window.removeEventListener("hconnect-account-settings-updated", loadAvatar);
+      window.removeEventListener("storage", loadAvatar);
+    };
+  }, [storageKey]);
+
   return (
     <aside
       className={cn(
@@ -113,7 +140,13 @@ export default function Sidebar({ collapsed, setCollapsed, user, logout }) {
       <div className="mt-auto p-3">
         <div className="rounded-2xl bg-violet-300/10 p-3 border border-violet-200/10">
           <div className="flex items-center gap-3 mb-2">
-            <div className="h-10 w-10 rounded-xl bg-white/10 grid place-items-center">👨‍⚕️</div>
+            <div className="h-10 w-10 rounded-xl bg-white/10 overflow-hidden grid place-items-center">
+              {avatarDataUrl ? (
+                <img src={avatarDataUrl} alt="User avatar" className="h-full w-full object-cover" />
+              ) : (
+                "👨‍⚕️"
+              )}
+            </div>
             {!collapsed && (
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold truncate">{user?.name || "User"}</div>

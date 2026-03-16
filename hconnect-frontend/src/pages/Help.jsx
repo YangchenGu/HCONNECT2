@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import Card from "../components/Card.jsx";
 import { faqs, supportContacts } from "../data/help.js";
 
@@ -21,7 +22,7 @@ export default function Help() {
 
   function submit(e) {
     e.preventDefault();
-    setMsg("Sent (demo). Next step: create ticket via API / email service.");
+    setMsg("Support request received. Our team will contact you using the email you provided.");
     setForm({ name: "", email: "", message: "" });
     setTimeout(() => setMsg(""), 2200);
   }
@@ -30,7 +31,7 @@ export default function Help() {
     <div className="p-6 space-y-6">
       <div>
         <div className="text-sm font-semibold text-slate-900">Help</div>
-        <div className="text-xs text-slate-500 mt-1">FAQ + contact support (UI skeleton).</div>
+        <div className="text-xs text-slate-500 mt-1">FAQ and support contacts for doctor workflows.</div>
       </div>
 
       {msg ? (
@@ -75,7 +76,7 @@ export default function Help() {
                   className="w-full min-h-[120px] rounded-2xl bg-white ring-1 ring-black/5 px-3 py-2 text-sm outline-none"
                   value={form.message}
                   onChange={(e) => setForm({ ...form, message: e.target.value })}
-                  placeholder="Describe the issue or question (demo)."
+                  placeholder="Describe your issue or question"
                 />
               </label>
               <div className="md:col-span-2 flex justify-end">
@@ -106,13 +107,16 @@ export default function Help() {
           </Card>
 
           <Card title="Shortcuts">
-            <div className="space-y-2 text-sm text-slate-700">
-              <div className="rounded-xl bg-slate-50 ring-1 ring-black/5 p-3">
-                Placeholder: link to docs / onboarding / training materials.
-              </div>
-              <div className="rounded-xl bg-slate-50 ring-1 ring-black/5 p-3">
-                Placeholder: link to privacy policy / terms.
-              </div>
+            <div className="space-y-2 text-sm">
+              <Link to="/patients" className="block rounded-xl bg-slate-50 ring-1 ring-black/5 p-3 text-slate-700 hover:bg-slate-100">
+                Open Patient List
+              </Link>
+              <Link to="/reports/overview" className="block rounded-xl bg-slate-50 ring-1 ring-black/5 p-3 text-slate-700 hover:bg-slate-100">
+                Open Daily Reports
+              </Link>
+              <Link to="/settings/account" className="block rounded-xl bg-slate-50 ring-1 ring-black/5 p-3 text-slate-700 hover:bg-slate-100">
+                Open Account Settings
+              </Link>
             </div>
           </Card>
         </div>

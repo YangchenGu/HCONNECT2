@@ -7,7 +7,6 @@ export const accountProfileDefaults = {
 };
 
 export const securityDefaults = {
-  twoFactorEnabled: false,
-  lastPasswordChange: "30 days ago",
-  lastLogin: "Today, 09:42",
+  lastPasswordChange: "Not available",
+  lastLogin: "Not available",
 };

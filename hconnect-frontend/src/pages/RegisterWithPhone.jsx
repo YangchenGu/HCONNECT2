@@ -11,6 +11,7 @@ export default function RegisterWithPhone() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -117,10 +118,22 @@ export default function RegisterWithPhone() {
       setMessageType("error");
       return setMessage("Please fill in full name and email.");
     }
+    if (!password) {
+      setMessageType("error");
+      return setMessage("Please enter a password.");
+    }
+    if (password.length < 8) {
+      setMessageType("error");
+      return setMessage("Password must be at least 8 characters.");
+    }
+    if (password !== confirmPassword) {
+      setMessageType("error");
+      return setMessage("Passwords do not match.");
+    }
     setLoading(true);
     try {
       const body = { email, name, phoneNumber: verifiedPhoneNumber, verificationToken };
-      if (password) body.password = password;
+      body.password = password;
       const res = await fetch(apiUrl("/internal/create-auth0-user"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -203,6 +216,7 @@ export default function RegisterWithPhone() {
               type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password (min 8 chars)"
               className="mt-1 mb-1 border border-slate-500/40 bg-slate-900/60 text-slate-100 rounded px-3 py-2 w-full"
             />
             <button
@@ -213,6 +227,15 @@ export default function RegisterWithPhone() {
               {showPassword ? "Hide" : "Show"}
             </button>
           </div>
+
+          <label className="block text-sm text-slate-300">Confirm Password</label>
+          <input
+            type={showPassword ? "text" : "password"}
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            placeholder="Confirm password"
+            className="mt-1 mb-1 border border-slate-500/40 bg-slate-900/60 text-slate-100 rounded px-3 py-2 w-full"
+          />
 
           <button onClick={submitRegistration} disabled={loading || !verificationToken} className="w-full bg-violet-500/90 text-white py-2 rounded disabled:bg-slate-500 disabled:cursor-not-allowed">Create HCONNECT Account</button>
 

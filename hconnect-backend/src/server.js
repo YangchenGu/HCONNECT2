@@ -948,6 +948,99 @@ app.post("/api/send-verification-email", checkJwt, async (req, res) => {
   }
 });
 
+app.get("/api/account/security", checkJwt, async (req, res) => {
+  const sub = req.auth?.payload?.sub;
+  if (!sub) return res.status(400).json({ error: "Invalid token payload" });
+
+  let email = req.auth?.payload?.email || null;
+  let lastLogin = null;
+  let lastPasswordChange = null;
+
+  try {
+    const localUser = await db.query(
+      `SELECT "email" FROM users WHERE "auth0_id"=$1 LIMIT 1`,
+      [sub]
+    );
+    if (localUser.rows.length && localUser.rows[0].email) {
+      email = localUser.rows[0].email;
+    }
+  } catch (error) {
+    console.warn("/api/account/security local email lookup warning:", error.message || error);
+  }
+
+  try {
+    const mgmtToken = await getManagementApiToken();
+    const encodedSub = encodeURIComponent(sub);
+    const profileRes = await axios.get(
+      `https://${process.env.AUTH0_DOMAIN}/api/v2/users/${encodedSub}`,
+      { headers: { Authorization: `Bearer ${mgmtToken}` } }
+    );
+
+    lastLogin = profileRes.data?.last_login || null;
+    lastPasswordChange = profileRes.data?.last_password_reset || null;
+    if (!email && profileRes.data?.email) {
+      email = profileRes.data.email;
+    }
+  } catch (error) {
+    console.warn("/api/account/security Auth0 profile warning:", error.response?.data || error.message || error);
+  }
+
+  return res.json({
+    email,
+    lastLogin,
+    lastPasswordChange,
+  });
+});
+
+app.post("/api/account/password-reset-email", checkJwt, async (req, res) => {
+  const sub = req.auth?.payload?.sub;
+  if (!sub) return res.status(400).json({ error: "Invalid token payload" });
+
+  let email = req.auth?.payload?.email || null;
+  const connection = process.env.AUTH0_DB_CONNECTION || "Username-Password-Authentication";
+
+  if (!process.env.AUTH0_DOMAIN || !process.env.AUTH0_CLIENT_ID) {
+    return res.status(500).json({ error: "Auth0 configuration missing on server" });
+  }
+
+  try {
+    if (!email) {
+      const localUser = await db.query(
+        `SELECT "email" FROM users WHERE "auth0_id"=$1 LIMIT 1`,
+        [sub]
+      );
+      if (localUser.rows.length && localUser.rows[0].email) {
+        email = localUser.rows[0].email;
+      }
+    }
+
+    if (!email) {
+      return res.status(400).json({ error: "Could not resolve account email" });
+    }
+
+    await axios.post(
+      `https://${process.env.AUTH0_DOMAIN}/dbconnections/change_password`,
+      {
+        client_id: process.env.AUTH0_CLIENT_ID,
+        email,
+        connection,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    return res.json({ success: true, message: "Password reset email sent" });
+  } catch (error) {
+    console.error("/api/account/password-reset-email error:", error.response?.data || error.message || error);
+    const status = error.response?.status || 500;
+    const message = getReadableAuth0Error(error, "Failed to send password reset email");
+    return res.status(status).json({ error: message });
+  }
+});
+
 app.post("/api/doctor/verify-phone", async (req, res) => {
   const { country_code, phone } = req.body;
   if (!country_code || !phone) return res.status(400).json({ error: "Country code and phone number required" });
