@@ -116,6 +116,10 @@ CREATE TABLE patient_advices (
   "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Index to optimize doctor-patient advice history queries ordered by created_at
+CREATE INDEX idx_patient_advices_doctor_patient_created_at_desc
+  ON patient_advices("DoctorID", "PatientID", "created_at" DESC);
+
 -- Health_Metric_Types 表 (健康指标类型)
 CREATE TABLE health_metric_types (
   "MetricTypeID" SERIAL PRIMARY KEY,
