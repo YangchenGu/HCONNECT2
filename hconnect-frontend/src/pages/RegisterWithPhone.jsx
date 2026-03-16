@@ -253,7 +253,7 @@ export default function RegisterWithPhone() {
         </div>
 
         <div className="mt-4 text-sm text-slate-300">
-          <button onClick={() => navigate(-1)} className="underline">Back</button>
+          <button onClick={() => navigate("/doctor/entry")} className="underline">Back</button>
         </div>
       </div>
     </div>

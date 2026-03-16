@@ -40,7 +40,7 @@ export default function DoctorEntry() {
         </div>
 
         <button
-          onClick={() => navigate(-1)}
+          onClick={() => navigate("/")}
           className="mt-6 w-full py-2 text-sm text-slate-300"
         >
           Back
