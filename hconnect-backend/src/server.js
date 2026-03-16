@@ -1022,17 +1022,24 @@ app.get("/api/account/security", checkJwt, async (req, res) => {
   const sub = req.auth?.payload?.sub;
   if (!sub) return res.status(400).json({ error: "Invalid token payload" });
 
+  let name = req.auth?.payload?.name || null;
   let email = req.auth?.payload?.email || null;
+  let phone = null;
+  let country = null;
   let lastLogin = null;
   let lastPasswordChange = null;
 
   try {
     const localUser = await db.query(
-      `SELECT "email" FROM users WHERE "auth0_id"=$1 LIMIT 1`,
+      `SELECT "name", "email", "phone", "country" FROM users WHERE "auth0_id"=$1 LIMIT 1`,
       [sub]
     );
-    if (localUser.rows.length && localUser.rows[0].email) {
-      email = localUser.rows[0].email;
+    if (localUser.rows.length) {
+      const row = localUser.rows[0];
+      if (row.name) name = row.name;
+      if (row.email) email = row.email;
+      if (row.phone) phone = row.phone;
+      if (row.country) country = row.country;
     }
   } catch (error) {
     console.warn("/api/account/security local email lookup warning:", error.message || error);
@@ -1048,15 +1055,27 @@ app.get("/api/account/security", checkJwt, async (req, res) => {
 
     lastLogin = profileRes.data?.last_login || null;
     lastPasswordChange = profileRes.data?.last_password_reset || null;
+    if (!name && profileRes.data?.name) {
+      name = profileRes.data.name;
+    }
     if (!email && profileRes.data?.email) {
       email = profileRes.data.email;
+    }
+    if (!phone && profileRes.data?.user_metadata?.phoneNumber) {
+      phone = profileRes.data.user_metadata.phoneNumber;
+    }
+    if (!country && profileRes.data?.user_metadata?.country) {
+      country = String(profileRes.data.user_metadata.country).toUpperCase();
     }
   } catch (error) {
     console.warn("/api/account/security Auth0 profile warning:", error.response?.data || error.message || error);
   }
 
   return res.json({
+    name,
     email,
+    phone,
+    country,
     lastLogin,
     lastPasswordChange,
   });

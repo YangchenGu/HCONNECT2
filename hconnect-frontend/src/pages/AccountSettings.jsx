@@ -149,6 +149,14 @@ export default function AccountSettings() {
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(payload.error || "Failed to load security information");
 
+        setProfile((prev) => ({
+          ...prev,
+          fullName: payload.name || prev.fullName,
+          email: payload.email || prev.email,
+          phone: payload.phone || prev.phone,
+          country: payload.country || prev.country,
+        }));
+
         setSecurity({
           lastLogin: payload.lastLogin || "Not available",
           lastPasswordChange: payload.lastPasswordChange || "Not available",

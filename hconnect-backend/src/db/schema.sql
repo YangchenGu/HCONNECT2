@@ -128,6 +128,43 @@ CREATE TABLE health_metric_types (
   "description" TEXT
 );
 
+-- Seed required metric types for patient daily report form.
+INSERT INTO health_metric_types ("name", "unit", "min_value", "max_value", "description")
+SELECT 'Blood Pressure Systolic', 'mmHg', 70, 250, 'Systolic blood pressure reading'
+WHERE NOT EXISTS (
+  SELECT 1 FROM health_metric_types WHERE LOWER("name") = LOWER('Blood Pressure Systolic')
+);
+
+INSERT INTO health_metric_types ("name", "unit", "min_value", "max_value", "description")
+SELECT 'Blood Pressure Diastolic', 'mmHg', 40, 150, 'Diastolic blood pressure reading'
+WHERE NOT EXISTS (
+  SELECT 1 FROM health_metric_types WHERE LOWER("name") = LOWER('Blood Pressure Diastolic')
+);
+
+INSERT INTO health_metric_types ("name", "unit", "min_value", "max_value", "description")
+SELECT 'Weight', 'kg', 20, 350, 'Body weight'
+WHERE NOT EXISTS (
+  SELECT 1 FROM health_metric_types WHERE LOWER("name") = LOWER('Weight')
+);
+
+INSERT INTO health_metric_types ("name", "unit", "min_value", "max_value", "description")
+SELECT 'Sleep Duration', 'hours', 0, 24, 'Total sleep duration in hours'
+WHERE NOT EXISTS (
+  SELECT 1 FROM health_metric_types WHERE LOWER("name") = LOWER('Sleep Duration')
+);
+
+INSERT INTO health_metric_types ("name", "unit", "min_value", "max_value", "description")
+SELECT 'Sleep Quality', 'score', 1, 10, 'Self-rated sleep quality score'
+WHERE NOT EXISTS (
+  SELECT 1 FROM health_metric_types WHERE LOWER("name") = LOWER('Sleep Quality')
+);
+
+INSERT INTO health_metric_types ("name", "unit", "min_value", "max_value", "description")
+SELECT 'Pain Level', 'score', 0, 10, 'Self-rated pain level score'
+WHERE NOT EXISTS (
+  SELECT 1 FROM health_metric_types WHERE LOWER("name") = LOWER('Pain Level')
+);
+
 -- Patient_Metric_Records table (patient health metric records)
 CREATE TABLE patient_metric_records (
   "RecordID" SERIAL PRIMARY KEY,
