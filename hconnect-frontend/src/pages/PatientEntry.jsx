@@ -46,7 +46,7 @@ export default function PatientEntry() {
         </div>
 
         <button
-          onClick={() => navigate(-1)}
+          onClick={() => navigate("/")}
           className="mt-6 text-sm text-blue-200/90 hover:text-blue-100 underline underline-offset-4"
         >
           Back
