@@ -6,6 +6,14 @@ const APP_ORIGIN =
   import.meta.env.VITE_APP_ORIGIN ||
   (import.meta.env.DEV ? "http://localhost:5173" : window.location.origin);
 
+function formatPhoneWithCountry(phone, country) {
+  const trimmedPhone = String(phone || "").trim();
+  const trimmedCountry = String(country || "").trim().toUpperCase();
+  if (!trimmedPhone) return "Not provided";
+  if (!trimmedCountry) return trimmedPhone;
+  return `${trimmedCountry} ${trimmedPhone}`;
+}
+
 export default function PatientAccount() {
   const { user, getAccessTokenSilently, logout } = useAuth0();
   const [name, setName] = useState(user?.name || "");
@@ -22,6 +30,11 @@ export default function PatientAccount() {
   const [isEditing, setIsEditing] = useState(false);
   const [savedSnapshot, setSavedSnapshot] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [identity, setIdentity] = useState({
+    email: user?.email || "",
+    phone: user?.phone_number || "",
+    country: "",
+  });
   const bloodTypeOptions = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 
   useEffect(() => {
@@ -148,6 +161,39 @@ export default function PatientAccount() {
 
     loadPatientProfile();
   }, [user?.sub]);
+
+  useEffect(() => {
+    if (!user?.sub) return;
+
+    async function loadIdentity() {
+      try {
+        const token = await getAccessTokenSilently({ audience: "https://hconnect-api" });
+        const res = await fetch(apiUrl("/api/account/security"), {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(payload.error || "Failed to load account identity");
+        }
+
+        setIdentity({
+          email: payload.email || user?.email || "",
+          phone: payload.phone || user?.phone_number || "",
+          country: payload.country || "",
+        });
+      } catch {
+        setIdentity({
+          email: user?.email || "",
+          phone: user?.phone_number || "",
+          country: "",
+        });
+      }
+    }
+
+    loadIdentity();
+  }, [user?.sub, user?.email, user?.phone_number, getAccessTokenSilently]);
 
   const isDirty = useMemo(() => {
     if (!savedSnapshot) return false;
@@ -352,11 +398,11 @@ export default function PatientAccount() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
             <div>
               <div className="text-[11px] text-blue-300/75">Email</div>
-              <div className="text-blue-100 break-all">{user?.email || "Not available"}</div>
+              <div className="text-blue-100 break-all">{identity.email || "Not available"}</div>
             </div>
             <div>
               <div className="text-[11px] text-blue-300/75">Phone</div>
-              <div className="text-blue-100">{user?.phone_number || "Not provided"}</div>
+              <div className="text-blue-100">{formatPhoneWithCountry(identity.phone, identity.country)}</div>
             </div>
           </div>
         </div>

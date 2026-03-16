@@ -24,6 +24,14 @@ function formatSecurityTime(value) {
   return parsed.toLocaleString();
 }
 
+function formatPhoneWithCountry(phone, country) {
+  const trimmedPhone = String(phone || "").trim();
+  const trimmedCountry = String(country || "").trim().toUpperCase();
+  if (!trimmedPhone) return "Not provided";
+  if (!trimmedCountry) return trimmedPhone;
+  return `${trimmedCountry} ${trimmedPhone}`;
+}
+
 function Toggle({ checked, onChange, label, hint, disabled = false }) {
   return (
     <div className="flex items-start justify-between gap-4 rounded-2xl bg-slate-50 ring-1 ring-black/5 p-4">
@@ -394,7 +402,7 @@ export default function AccountSettings() {
               </div>
               <div className="rounded-2xl bg-[#16112d] ring-1 ring-violet-300/20 px-3 py-2 md:col-span-3">
                 <div className="text-xs text-slate-500 mb-1">Phone</div>
-                <div className="text-sm text-slate-900">{profile.phone || "Not provided"}</div>
+                <div className="text-sm text-slate-900">{formatPhoneWithCountry(profile.phone, profile.country)}</div>
               </div>
             </div>
 
