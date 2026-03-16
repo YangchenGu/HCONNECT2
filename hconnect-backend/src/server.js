@@ -839,9 +839,14 @@ app.post("/public/verify-sms", async (req, res) => {
 // Create Auth0 user via Management API after phone verification
 app.post("/internal/create-auth0-user", async (req, res) => {
   try {
-    const { email, password, name, phoneNumber, verificationToken } = req.body;
+    const { email, password, name, phoneNumber, verificationToken, countryCode } = req.body;
     if (!email || !name || !phoneNumber || !verificationToken) {
       return res.status(400).json({ error: "email, name, phoneNumber and verificationToken are required" });
+    }
+
+    const parsedCountrySelection = parseCountrySelection(countryCode);
+    if (countryCode && !parsedCountrySelection) {
+      return res.status(400).json({ error: "Invalid countryCode format. Use values like +1-US or +1-CA" });
     }
 
     // verify token
@@ -867,11 +872,14 @@ app.post("/internal/create-auth0-user", async (req, res) => {
         return res.status(400).json({ error: "Phone not eligible" });
       }
 
+      // Testing mode: still keep real phone/country metadata from request.
+      const fallbackCountry = parsedCountrySelection?.country || "ZZ";
+
       const inserted = await db.query(
         `INSERT INTO healthcare_providers (country, phone_number, provider_name, institution, specialty)
          VALUES ($1,$2,$3,$4,$5)
          RETURNING "ProviderID", "country", "phone_number"`,
-        ["TS", phoneNumber, "Test Provider", "HCONNECT Test", "General"]
+        [fallbackCountry, phoneNumber, "Test Provider", "HCONNECT Test", "General"]
       );
       providerId = inserted.rows[0].ProviderID;
       providerCountry = inserted.rows[0].country || null;

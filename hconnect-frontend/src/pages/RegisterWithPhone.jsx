@@ -132,7 +132,7 @@ export default function RegisterWithPhone() {
     }
     setLoading(true);
     try {
-      const body = { email, name, phoneNumber: verifiedPhoneNumber, verificationToken };
+      const body = { email, name, phoneNumber: verifiedPhoneNumber, verificationToken, countryCode };
       body.password = password;
       const res = await fetch(apiUrl("/internal/create-auth0-user"), {
         method: "POST",
